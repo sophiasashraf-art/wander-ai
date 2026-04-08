@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import ItineraryEditor, { Day, recalcTimes } from './components/ItineraryEditor'
+import TripsSidebar from './components/TripsSidebar'
+import AddMorePlaces from './components/AddMorePlaces'
 
 const DAY_COLORS = ['#C17B4E', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
@@ -17,8 +19,140 @@ export default function Home() {
   const [places, setPlaces] = useState<any[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [tripSaved, setTripSaved] = useState(false) // saved to sidebar
+  const [startDate, setStartDate] = useState('') // YYYY-MM-DD
   const [itinerary, setItinerary] = useState<any>(null)
   const [editableDays, setEditableDays] = useState<Day[]>([])
+  const [undoSnapshot, setUndoSnapshot] = useState<Day[] | null>(null)
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isRestoringRef = useRef(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // Load trip from URL param on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const id = params.get('trip')
+    if (!id) return
+
+    isRestoringRef.current = true
+    ;(async () => {
+      const { data: trip } = await supabase.from('trips').select('*').eq('id', id).single()
+      if (!trip) { isRestoringRef.current = false; return }
+
+      const { data: placesData } = await supabase.from('places').select('*').eq('trip_id', id)
+
+      setTripId(id)
+      setDestination(trip.destination || '')
+      setDuration(parseInt(trip.duration) || 3)
+      setVibe(trip.vibe || 'balanced')
+      setPlaces(placesData || [])
+      setStartDate(trip.start_date || '')
+
+      if (trip.itinerary?.days) {
+        setItinerary(trip.itinerary)
+        const normalized: Day[] = trip.itinerary.days.map((day: any) => ({
+          ...day,
+          stops: day.stops.map((stop: any, i: number) => ({
+            ...stop,
+            id: stop.id || `${day.day}-${i}-${stop.name}`,
+          })),
+        }))
+        setEditableDays(normalized)
+        setSaved(true)
+        setTripSaved(trip.saved || false)
+      }
+      isRestoringRef.current = false
+    })()
+  }, [])
+
+  // Debounced save whenever editableDays changes
+  const saveItinerary = useCallback((days: Day[], id: string) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(async () => {
+      await supabase.from('trips').update({ itinerary: { days } }).eq('id', id)
+    }, 1000)
+  }, [])
+
+  function handleDaysChange(days: Day[]) {
+    setEditableDays(days)
+    if (tripId && !isRestoringRef.current) saveItinerary(days, tripId)
+  }
+
+  function snapshotAndReplace(days: Day[]) {
+    setUndoSnapshot(editableDays)
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    undoTimerRef.current = setTimeout(() => setUndoSnapshot(null), 12000)
+    handleDaysChange(days)
+  }
+
+  function handleUndo() {
+    if (!undoSnapshot) return
+    handleDaysChange(undoSnapshot)
+    setUndoSnapshot(null)
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+  }
+
+  async function loadTrip(id: string) {
+    isRestoringRef.current = true
+    const { data: trip } = await supabase.from('trips').select('*').eq('id', id).single()
+    if (!trip) { isRestoringRef.current = false; return }
+    const { data: placesData } = await supabase.from('places').select('*').eq('trip_id', id)
+    setTripId(id)
+    setDestination(trip.destination || '')
+    setDuration(parseInt(trip.duration) || 3)
+    setVibe(trip.vibe || 'balanced')
+    setPlaces(placesData || [])
+    setInput('')
+    setSaved(true)
+    setStartDate(trip.start_date || '')
+    if (trip.itinerary?.days) {
+      setItinerary(trip.itinerary)
+      const normalized: Day[] = trip.itinerary.days.map((day: any) => ({
+        ...day,
+        stops: day.stops.map((stop: any, i: number) => ({
+          ...stop,
+          id: stop.id || `${day.day}-${i}-${stop.name}`,
+        })),
+      }))
+      setEditableDays(normalized)
+    } else {
+      setItinerary(null)
+      setEditableDays([])
+    }
+    setTripSaved(trip.saved || false)
+    window.history.replaceState({}, '', `?trip=${id}`)
+    isRestoringRef.current = false
+  }
+
+  function resetTrip() {
+    setTripId(null)
+    setDestination('')
+    setDuration(3)
+    setVibe('balanced')
+    setInput('')
+    setPlaces([])
+    setSaved(false)
+    setTripSaved(false)
+    setStartDate('')
+    setItinerary(null)
+    setEditableDays([])
+    window.history.replaceState({}, '', '/')
+  }
+
+  async function handleStartDateChange(date: string) {
+    setStartDate(date)
+    if (tripId) {
+      await supabase.from('trips').update({ start_date: date || null }).eq('id', tripId)
+    }
+  }
+
+  async function handleSaveTrip() {
+    if (!tripId) return
+    await supabase.from('trips').update({ saved: true }).eq('id', tripId)
+    setTripSaved(true)
+    window.history.replaceState({}, '', `?trip=${tripId}`)
+  }
 
   async function handleExtract() {
     if (!input.trim() || !destination.trim()) return
@@ -60,7 +194,6 @@ export default function Home() {
       return
     }
     setGenerating(true)
-    setItinerary(null)
 
     await supabase
       .from('trips')
@@ -83,7 +216,13 @@ export default function Home() {
         id: stop.id || `${day.day}-${i}-${stop.name}`,
       })),
     }))
-    setEditableDays(normalized)
+    if (editableDays.length > 0) snapshotAndReplace(normalized)
+    else handleDaysChange(normalized)
+
+    // Save itinerary to Supabase + put trip in URL
+    await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', tripId)
+    window.history.replaceState({}, '', `?trip=${tripId}`)
+
     setGenerating(false)
   }
 
@@ -113,7 +252,7 @@ export default function Home() {
   )
 
   const mapCenter = mapMarkers.length > 0
-    ? { lat: mapMarkers[0].lat, lng: mapMarkers[0].lng }
+    ? { lat: (mapMarkers[0] as any).lat, lng: (mapMarkers[0] as any).lng }
     : { lat: 40.7128, lng: -74.0060 }
 
   const scheduledNames = new Set(
@@ -124,6 +263,26 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#FDFAF5] flex flex-col items-center p-8 pt-16">
 
+      {/* Trips sidebar */}
+      <TripsSidebar
+        open={sidebarOpen}
+        currentTripId={tripId}
+        onClose={() => setSidebarOpen(false)}
+        onSelect={loadTrip}
+        onNew={resetTrip}
+      />
+
+      {/* Hamburger */}
+      <button
+        onClick={() => setSidebarOpen(true)}
+        className="fixed top-5 left-5 z-30 flex flex-col gap-1.5 p-2 rounded-xl hover:bg-[#F5F0E8] transition-colors"
+        aria-label="Open trips"
+      >
+        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
+        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
+        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
+      </button>
+
       <h1 className="font-serif text-4xl text-[#2C2416] mb-2">
         wander<span className="text-[#C17B4E]">.</span>ai
       </h1>
@@ -131,6 +290,8 @@ export default function Home() {
         Turn inspiration into your perfect trip
       </p>
 
+      {/* Only show the build form when not viewing a saved trip */}
+      {!tripSaved && (<>
       <div className="w-full max-w-2xl">
 
         {/* Destination + Duration */}
@@ -266,13 +427,84 @@ export default function Home() {
           </div>
         </div>
       )}
+      </>)} {/* end !tripSaved */}
 
       {/* Map + Itinerary */}
       {itinerary?.days && (
         <div className="w-full max-w-2xl mt-10">
-          <p className="text-xs uppercase tracking-widest text-[#8C8070] mb-6">
-            Your {destination} itinerary
-          </p>
+          <div className="flex items-center justify-between mb-6">
+            <p className="text-xs uppercase tracking-widest text-[#8C8070]">
+              Your {destination} itinerary
+            </p>
+            <div className="flex items-center gap-2">
+              {undoSnapshot && (
+                <button
+                  onClick={handleUndo}
+                  className="text-xs px-3 py-1.5 border border-[#E8DFD0] text-[#8C8070] rounded-lg hover:border-[#C17B4E] hover:text-[#C17B4E] transition-colors"
+                >
+                  ↩ Undo
+                </button>
+              )}
+              {!tripSaved ? (
+                <button
+                  onClick={handleSaveTrip}
+                  className="text-xs px-3 py-1.5 bg-[#2C2416] text-white rounded-lg hover:bg-[#5C5040] transition-colors"
+                >
+                  Save trip
+                </button>
+              ) : (
+                <span className="text-xs text-[#7A9E7E] font-medium">✓ Saved</span>
+              )}
+            </div>
+          </div>
+
+          {/* Date picker — available for all trips once itinerary exists */}
+          {!tripSaved && (
+            <div className="flex items-center gap-2 mb-6">
+              <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 focus-within:border-[#C17B4E] transition-colors">
+                <span className="text-xs text-[#8C8070]">Start date:</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={e => setStartDate(e.target.value)}
+                  className="bg-transparent outline-none text-sm text-[#2C2416]"
+                />
+              </div>
+              <span className="text-xs text-[#C8BFB0]">optional</span>
+            </div>
+          )}
+          {/* Duration editor for saved trips */}
+          {tripSaved && (
+            <div className="flex items-center gap-3 mb-6 flex-wrap">
+              <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5">
+                <span className="text-xs text-[#8C8070]">Days:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={duration}
+                  onChange={e => setDuration(Number(e.target.value))}
+                  className="w-10 bg-transparent outline-none text-sm text-[#2C2416] text-center"
+                />
+              </div>
+              <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 focus-within:border-[#C17B4E] transition-colors">
+                <span className="text-xs text-[#8C8070]">Start:</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={e => handleStartDateChange(e.target.value)}
+                  className="bg-transparent outline-none text-sm text-[#2C2416]"
+                />
+              </div>
+              <button
+                onClick={handleGenerateItinerary}
+                disabled={generating}
+                className="text-xs px-3 py-1.5 bg-[#2C2416] text-white rounded-lg hover:bg-[#5C5040] transition-colors disabled:opacity-50"
+              >
+                {generating ? 'Regenerating...' : 'Regenerate'}
+              </button>
+            </div>
+          )}
 
           {/* Map */}
           {mapMarkers.length > 0 && (
@@ -374,7 +606,7 @@ export default function Home() {
                         const newDays = editableDays.map((d, i) =>
                           i === dayIndex ? { ...d, stops: recalcTimes([...d.stops, newStop]) } : d
                         )
-                        setEditableDays(newDays)
+                        handleDaysChange(newDays)
                         e.target.value = ''
                       }}
                       className="w-full text-xs bg-[#FDFAF5] border border-[#E8DFD0] rounded-lg px-2 py-1.5 text-[#8C8070] outline-none focus:border-[#C17B4E] cursor-pointer"
@@ -391,8 +623,26 @@ export default function Home() {
           )}
 
           {/* Draggable day cards */}
-          <ItineraryEditor days={editableDays} onChange={setEditableDays} />
+          <ItineraryEditor days={editableDays} onChange={handleDaysChange} startDate={startDate} />
         </div>
+      )}
+
+      {/* Add more places to saved trip */}
+      {tripSaved && tripId && (
+        <AddMorePlaces
+          tripId={tripId}
+          onMerged={days => {
+            const normalized: Day[] = days.map((day: any) => ({
+              ...day,
+              stops: day.stops.map((stop: any, i: number) => ({
+                ...stop,
+                id: stop.id || `${day.day}-${i}-${stop.name}`,
+              })),
+            }))
+            snapshotAndReplace(normalized)
+            setItinerary({ days: normalized })
+          }}
+        />
       )}
     </main>
   )

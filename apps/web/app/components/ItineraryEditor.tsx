@@ -41,6 +41,15 @@ export interface Day {
 interface Props {
   days: Day[]
   onChange: (days: Day[]) => void
+  startDate?: string // YYYY-MM-DD
+}
+
+// Format a date offset from startDate
+function getDayDate(startDate: string, dayIndex: number): string | null {
+  if (!startDate) return null
+  const d = new Date(startDate + 'T00:00:00')
+  d.setDate(d.getDate() + dayIndex)
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 // ── Drag handle icon ──
@@ -249,7 +258,7 @@ function AddStopInput({ onAdd }: { onAdd: (name: string) => void }) {
 }
 
 // ── Main editor ──
-export default function ItineraryEditor({ days, onChange }: Props) {
+export default function ItineraryEditor({ days, onChange, startDate = '' }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
 
   const sensors = useSensors(
@@ -381,6 +390,11 @@ export default function ItineraryEditor({ days, onChange }: Props) {
                   Day {day.day}
                 </span>
                 <span className="text-sm font-medium text-[#2C2416]">{day.title}</span>
+                {getDayDate(startDate, dayIndex) && (
+                  <span className="text-xs text-[#8C8070] ml-1">
+                    · {getDayDate(startDate, dayIndex)}
+                  </span>
+                )}
                 <span className="ml-auto text-xs text-[#C8BFB0]">{day.stops.length} stops</span>
               </div>
 
