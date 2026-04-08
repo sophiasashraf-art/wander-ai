@@ -18,11 +18,27 @@ interface Props {
   onClose: () => void
   onSelect: (tripId: string) => void
   onNew: () => void
+  onDelete?: (tripId: string) => void
 }
 
-export default function TripsSidebar({ open, currentTripId, onClose, onSelect, onNew }: Props) {
+export default function TripsSidebar({ open, currentTripId, onClose, onSelect, onNew, onDelete }: Props) {
   const [trips, setTrips] = useState<Trip[]>([])
   const [loading, setLoading] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+
+  async function handleDelete(e: React.MouseEvent, tripId: string) {
+    e.stopPropagation()
+    if (confirmDelete === tripId) {
+      await supabase.from('places').delete().eq('trip_id', tripId)
+      await supabase.from('trips').delete().eq('id', tripId)
+      setTrips(prev => prev.filter(t => t.id !== tripId))
+      setConfirmDelete(null)
+      onDelete?.(tripId)
+    } else {
+      setConfirmDelete(tripId)
+      setTimeout(() => setConfirmDelete(null), 3000)
+    }
+  }
 
   useEffect(() => {
     if (!open) return
@@ -92,33 +108,45 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
             <p className="text-xs text-[#8C8070] text-center py-8">No saved trips yet</p>
           )}
           {trips.map(trip => (
-            <button
+            <div
               key={trip.id}
-              onClick={() => { onSelect(trip.id); onClose() }}
-              className={`w-full text-left px-4 py-3 hover:bg-[#F5F0E8] transition-colors border-b border-[#F5F0E8] last:border-0 ${
+              className={`relative group flex items-start px-4 py-3 border-b border-[#F5F0E8] last:border-0 cursor-pointer hover:bg-[#F5F0E8] transition-colors ${
                 trip.id === currentTripId ? 'bg-[#FEF8F4]' : ''
               }`}
+              onClick={() => { onSelect(trip.id); onClose() }}
             >
-              <div className="flex items-center justify-between gap-2 mb-0.5">
-                <span className="text-sm font-medium text-[#2C2416] truncate">
-                  {trip.destination}
-                </span>
-                {trip.id === currentTripId && (
-                  <span className="text-xs text-[#C17B4E] shrink-0">current</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-sm font-medium text-[#2C2416] truncate">
+                    {trip.destination}
+                  </span>
+                  {trip.id === currentTripId && (
+                    <span className="text-xs text-[#C17B4E] shrink-0">current</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-[#8C8070]">
+                  <span>{vibeEmoji[trip.vibe] || '✈️'}</span>
+                  <span>{trip.duration}</span>
+                  <span>·</span>
+                  <span>{formatDate(trip.created_at)}</span>
+                </div>
+                {trip.itinerary?.days && (
+                  <p className="text-xs text-[#7A9E7E] mt-1">
+                    {trip.itinerary.days.length} days · {trip.itinerary.days.reduce((n: number, d: any) => n + d.stops.length, 0)} stops
+                  </p>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-xs text-[#8C8070]">
-                <span>{vibeEmoji[trip.vibe] || '✈️'}</span>
-                <span>{trip.duration}</span>
-                <span>·</span>
-                <span>{formatDate(trip.created_at)}</span>
-              </div>
-              {trip.itinerary?.days && (
-                <p className="text-xs text-[#7A9E7E] mt-1">
-                  {trip.itinerary.days.length} days · {trip.itinerary.days.reduce((n: number, d: any) => n + d.stops.length, 0)} stops
-                </p>
-              )}
-            </button>
+              <button
+                onClick={e => handleDelete(e, trip.id)}
+                className={`ml-2 shrink-0 text-xs px-2 py-1 rounded-lg transition-colors ${
+                  confirmDelete === trip.id
+                    ? 'bg-red-50 text-red-400 opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 text-[#C8BFB0] hover:text-red-400'
+                }`}
+              >
+                {confirmDelete === trip.id ? 'confirm?' : '×'}
+              </button>
+            </div>
           ))}
         </div>
       </div>

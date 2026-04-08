@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   DndContext,
   DragEndEvent,
@@ -41,7 +41,9 @@ export interface Day {
 interface Props {
   days: Day[]
   onChange: (days: Day[]) => void
-  startDate?: string // YYYY-MM-DD
+  startDate?: string
+  viewOnly?: boolean
+  destination?: string
 }
 
 // Format a date offset from startDate
@@ -72,11 +74,13 @@ function StopRow({
   dayColor,
   onDelete,
   onTimeChange,
+  viewOnly = false,
 }: {
   stop: Stop
   dayColor: string
   onDelete: () => void
   onTimeChange: (time: string) => void
+  viewOnly?: boolean
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: stop.id })
@@ -96,14 +100,16 @@ function StopRow({
       className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white"
     >
       {/* Drag handle */}
-      <button
-        {...attributes}
-        {...listeners}
-        className="mt-1 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity shrink-0 touch-none"
-        aria-label="Drag to reorder"
-      >
-        <GripIcon />
-      </button>
+      {!viewOnly && (
+        <button
+          {...attributes}
+          {...listeners}
+          className="mt-1 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity shrink-0 touch-none"
+          aria-label="Drag to reorder"
+        >
+          <GripIcon />
+        </button>
+      )}
 
       {/* Dot */}
       <div
@@ -118,7 +124,7 @@ function StopRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {/* Editable time */}
-          {editing ? (
+          {!viewOnly && editing ? (
             <div className="flex flex-col gap-0.5">
               <input
                 type="text"
@@ -153,9 +159,9 @@ function StopRow({
             </div>
           ) : (
             <button
-              onClick={() => setEditing(true)}
-              title="Click to edit time"
-              className="text-xs text-[#8C8070] w-14 shrink-0 text-left hover:text-[#C17B4E] transition-colors"
+              onClick={() => !viewOnly && setEditing(true)}
+              title={viewOnly ? undefined : "Click to edit time"}
+              className={`text-xs text-[#8C8070] w-14 shrink-0 text-left transition-colors ${!viewOnly ? 'hover:text-[#C17B4E] cursor-pointer' : 'cursor-default'}`}
             >
               {stop.time}
             </button>
@@ -173,13 +179,15 @@ function StopRow({
       </div>
 
       {/* Delete */}
-      <button
-        onClick={onDelete}
-        className="mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none"
-        aria-label="Remove stop"
-      >
-        ×
-      </button>
+      {!viewOnly && (
+        <button
+          onClick={onDelete}
+          className="mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none"
+          aria-label="Remove stop"
+        >
+          ×
+        </button>
+      )}
     </div>
   )
 }
@@ -203,16 +211,59 @@ function DragOverlayCard({ stop, dayColor }: { stop: Stop; dayColor: string }) {
   )
 }
 
-// ── Add place inline input ──
-function AddStopInput({ onAdd }: { onAdd: (name: string) => void }) {
-  const [value, setValue] = useState('')
-  const [open, setOpen] = useState(false)
 
-  function submit() {
-    const trimmed = value.trim()
-    if (!trimmed) return
-    onAdd(trimmed)
-    setValue('')
+// Parse time from text like 'beach 9am' -> { name: 'beach', time: '9:00 AM' }
+function extractTimeFromText(text: string): { name: string; time: string | null } {
+  const m = text.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i)
+  let h = parseInt(m[1])
+  const min = parseInt(m[2] || '0')
+  const p = m[3].toLowerCase()
+  if (p === 'pm' && h !== 12) h += 12
+  if (p === 'am' && h === 12) h = 0
+  const period = h < 12 ? 'AM' : 'PM'
+  const display = h % 12 || 12
+  const time = `${display}:${String(min).padStart(2, '0')} ${period}`
+  const name = text.replace(m[0], '').replace(/\s+/g, ' ').trim()
+  return { name: name || text.trim(), time }
+}
+
+// ── Add place inline input with autocomplete ──
+function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: string, time?: string) => void; destination: string }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [suggestions, setSuggestions] = useState<any[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionToken = useRef(crypto.randomUUID())
+
+  useEffect(() => {
+    if (!query.trim() || query.length < 2) { setSuggestions([]); return }
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/places-autocomplete?q=${encodeURIComponent(query)}&location=${encodeURIComponent(destination)}&session=${sessionToken.current}`)
+        const data = await res.json()
+        setSuggestions(data.predictions || [])
+        setShowSuggestions(true)
+      } catch { setSuggestions([]) }
+    }, 300)
+  }, [query, destination])
+
+  async function handleSelect(prediction: any) {
+    setShowSuggestions(false)
+    const name = prediction.structured_formatting?.main_text || prediction.description
+    const note = prediction.structured_formatting?.secondary_text || ''
+    sessionToken.current = crypto.randomUUID()
+    onAdd(name, note)
+    setQuery('')
+    setOpen(false)
+  }
+
+  function handleManualAdd() {
+    if (!query.trim()) return
+    const { name, time } = extractTimeFromText(query)
+    onAdd(name, undefined, time || undefined)
+    setQuery('')
     setOpen(false)
   }
 
@@ -228,41 +279,52 @@ function AddStopInput({ onAdd }: { onAdd: (name: string) => void }) {
   }
 
   return (
-    <div className="px-4 py-2.5 flex items-center gap-2 bg-[#FDFAF5]">
-      <input
-        autoFocus
-        type="text"
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter') submit()
-          if (e.key === 'Escape') { setOpen(false); setValue('') }
-        }}
-        placeholder="Place name..."
-        className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0]"
-      />
-      <button
-        onClick={submit}
-        className="text-xs text-[#C17B4E] font-medium hover:text-[#8B5330]"
-      >
-        Add
-      </button>
-      <button
-        onClick={() => { setOpen(false); setValue('') }}
-        className="text-xs text-[#8C8070] hover:text-[#2C2416]"
-      >
-        Cancel
-      </button>
+    <div className="relative">
+      <div className="px-4 py-2.5 flex items-center gap-2 bg-[#FDFAF5]">
+        <input
+          autoFocus
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { setShowSuggestions(false); handleManualAdd() }
+            if (e.key === 'Escape') { setOpen(false); setQuery(''); setShowSuggestions(false) }
+          }}
+          placeholder="Search or type a place..."
+          className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0]"
+        />
+        <button onClick={handleManualAdd} className="text-xs text-[#C17B4E] font-medium hover:text-[#8B5330]">Add</button>
+        <button onClick={() => { setOpen(false); setQuery(''); setShowSuggestions(false) }} className="text-xs text-[#8C8070] hover:text-[#2C2416]">Cancel</button>
+      </div>
+      {showSuggestions && suggestions.length > 0 && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setShowSuggestions(false)} />
+          <div className="absolute left-0 right-0 bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-20 max-h-48 overflow-y-auto mx-2">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => handleSelect(s)}
+                className="w-full text-left px-4 py-2.5 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0"
+              >
+                <p className="text-sm text-[#2C2416] font-medium truncate">{s.structured_formatting?.main_text || s.description}</p>
+                <p className="text-xs text-[#8C8070] truncate">{s.structured_formatting?.secondary_text || ''}</p>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
 // ── Main editor ──
-export default function ItineraryEditor({ days, onChange, startDate = '' }: Props) {
+export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '' }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, {
+      activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 }
+    })
   )
 
   // Helper: recalc times on all days then call onChange
@@ -345,13 +407,14 @@ export default function ItineraryEditor({ days, onChange, startDate = '' }: Prop
     update(newDays)
   }
 
-  function addStop(dayIndex: number, name: string) {
+  function addStop(dayIndex: number, name: string, note?: string, explicitTime?: string) {
     const day = days[dayIndex]
     const newStop: Stop = {
       id: `manual-${Date.now()}-${Math.random()}`,
       name,
       time: formatHour(9 + day.stops.length * 2),
       category: 'other',
+      note: note || '',
       suggested: false,
     }
     const newDays = days.map((d, i) =>
@@ -410,12 +473,13 @@ export default function ItineraryEditor({ days, onChange, startDate = '' }: Prop
                     dayColor={color}
                     onDelete={() => deleteStop(dayIndex, stop.id)}
                     onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
+                    viewOnly={viewOnly}
                   />
                 ))}
               </SortableContext>
 
               {/* Add stop */}
-              <AddStopInput onAdd={name => addStop(dayIndex, name)} />
+              {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time) => addStop(dayIndex, name, note, time)} />}
             </div>
           )
         })}
