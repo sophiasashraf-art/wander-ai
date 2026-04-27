@@ -1,52 +1,45 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import {
-  DndContext,
-  DragEndEvent,
-  DragOverEvent,
-  DragOverlay,
-  DragStartEvent,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  closestCorners,
-} from '@dnd-kit/core'
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-  arrayMove,
-} from '@dnd-kit/sortable'
+import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners } from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
 const DAY_COLORS = ['#C17B4E', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
 export interface Stop {
-  id: string
-  time: string
-  manualTime?: boolean
-  name: string
-  category: string
-  note?: string
-  suggested?: boolean
+  id: string; time: string; manualTime?: boolean
+  name: string; category: string; note?: string; suggested?: boolean
+  lat?: number; lng?: number; opening_hours?: string[]
+  photo_reference?: string; rating?: number; price_level?: number; address?: string
 }
 
 export interface Day {
-  day: number
-  title: string
-  stops: Stop[]
+  day: number; title: string; stops: Stop[]
 }
 
 interface Props {
-  days: Day[]
-  onChange: (days: Day[]) => void
-  startDate?: string
-  viewOnly?: boolean
-  destination?: string
+  days: Day[]; onChange: (days: Day[]) => void
+  startDate?: string; viewOnly?: boolean; destination?: string
 }
 
-// Format a date offset from startDate
+// Parse time from text like "beach 9am" → { name: "beach", time: "9:00 AM" }
+function extractTimeFromText(text: string): { name: string; time: string | null } {
+  const timeRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i
+  const m = text.match(timeRegex)
+  if (!m) return { name: text.trim(), time: null }
+  let h = parseInt(m[1])
+  const min = parseInt(m[2] || '0')
+  const p = m[3].toLowerCase()
+  if (p === 'pm' && h !== 12) h += 12
+  if (p === 'am' && h === 12) h = 0
+  const period = h < 12 ? 'AM' : 'PM'
+  const display = h % 12 || 12
+  const time = `${display}:${String(min).padStart(2, '0')} ${period}`
+  const name = text.replace(timeRegex, '').replace(/\s+/g, ' ').trim()
+  return { name: name || text.trim(), time }
+}
+
 function getDayDate(startDate: string, dayIndex: number): string | null {
   if (!startDate) return null
   const d = new Date(startDate + 'T00:00:00')
@@ -54,7 +47,43 @@ function getDayDate(startDate: string, dayIndex: number): string | null {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
-// ── Drag handle icon ──
+// Parse "Monday: 8:00 AM – 10:00 PM" → { open: 480, close: 1320 } in minutes
+function parseHoursLine(line: string): { open: number; close: number } | null {
+  const m = line.match(/:\s*(\d{1,2}):(\d{2})\s*(AM|PM)\s*[–-]\s*(\d{1,2}):(\d{2})\s*(AM|PM)/i)
+  if (!m) return null
+  const toMin = (h: string, min: string, period: string) => {
+    let hh = parseInt(h)
+    if (period.toUpperCase() === 'PM' && hh !== 12) hh += 12
+    if (period.toUpperCase() === 'AM' && hh === 12) hh = 0
+    return hh * 60 + parseInt(min)
+  }
+  return { open: toMin(m[1], m[2], m[3]), close: toMin(m[4], m[5], m[6]) }
+}
+
+// Returns today's hours line from weekday_text array (uses current day of week as fallback)
+function getTodayHours(opening_hours: string[]): string | null {
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  const today = days[new Date().getDay()]
+  return opening_hours.find(h => h.startsWith(today)) || opening_hours[0] || null
+}
+
+// Returns true if the stop's scheduled time is outside opening hours
+function isOutsideHours(time: string, opening_hours: string[]): boolean {
+  const hoursLine = getTodayHours(opening_hours)
+  if (!hoursLine) return false
+  if (hoursLine.toLowerCase().includes('closed')) return true
+  const range = parseHoursLine(hoursLine)
+  if (!range) return false
+  const stopMin = parseTime(time)
+  if (stopMin === 0) return false
+  return stopMin < range.open || stopMin >= range.close
+}
+
+// Format hours for display: "Mon: 8:00 AM – 10:00 PM" → "8 AM – 10 PM"
+function formatHoursShort(line: string): string {
+  return line.replace(/^[^:]+:\s*/, '').replace(/:00/g, '').trim()
+}
+
 function GripIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-[#C8BFB0]">
@@ -68,139 +97,246 @@ function GripIcon() {
   )
 }
 
-// ── Single sortable stop row ──
-function StopRow({
-  stop,
-  dayColor,
-  onDelete,
-  onTimeChange,
-  viewOnly = false,
-}: {
-  stop: Stop
-  dayColor: string
-  onDelete: () => void
-  onTimeChange: (time: string) => void
-  viewOnly?: boolean
+function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, viewOnly = false, destination = '' }: {
+  stop: Stop; dayColor: string; onDelete: () => void
+  onTimeChange: (time: string) => void; onNoteChange: (note: string) => void
+  viewOnly?: boolean; destination?: string
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: stop.id })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: stop.id })
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState(false)
+  const [editingNote, setEditingNote] = useState(false)
+  const [showHours, setShowHours] = useState(false)
+  const [showPopup, setShowPopup] = useState(false)
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }
 
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.35 : 1,
-  }
+  const hoursLine = stop.opening_hours ? getTodayHours(stop.opening_hours) : null
+  const outsideHours = stop.opening_hours && stop.time ? isOutsideHours(stop.time, stop.opening_hours) : false
 
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white"
-    >
-      {/* Drag handle */}
+    <div ref={setNodeRef} style={style} className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white">
       {!viewOnly && (
-        <button
-          {...attributes}
-          {...listeners}
-          className="mt-1 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity shrink-0 touch-none"
-          aria-label="Drag to reorder"
-        >
+        <button {...attributes} {...listeners} className="mt-1 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity shrink-0 touch-none" aria-label="Drag to reorder">
           <GripIcon />
         </button>
       )}
-
-      {/* Dot */}
-      <div
-        className="mt-1.5 w-2 h-2 rounded-full shrink-0"
-        style={{
-          background: stop.suggested ? 'transparent' : dayColor,
-          border: stop.suggested ? `2px dashed ${dayColor}` : 'none',
-        }}
-      />
-
-      {/* Content */}
+      <div className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: stop.suggested ? 'transparent' : dayColor, border: stop.suggested ? `2px dashed ${dayColor}` : 'none' }} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          {/* Editable time */}
           {!viewOnly && editing ? (
             <div className="flex flex-col gap-0.5">
-              <input
-                type="text"
-                autoFocus
-                defaultValue={stop.time}
-                placeholder="9:00 AM"
+              <input type="text" autoFocus defaultValue={stop.time} placeholder="9:00 AM"
                 onChange={() => setError(false)}
                 onBlur={e => {
                   const val = e.target.value.trim()
                   if (!val) { setEditing(false); setError(false); return }
-                  const normalized = normalizeTimeInput(val)
-                  if (normalized) {
-                    setEditing(false)
-                    setError(false)
-                    onTimeChange(normalized)
-                  } else {
-                    setError(true)
-                    e.target.focus()
-                  }
+                  const n = normalizeTimeInput(val)
+                  if (n) { setEditing(false); setError(false); onTimeChange(n) }
+                  else { setError(true); e.target.focus() }
                 }}
                 onKeyDown={e => {
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                   if (e.key === 'Escape') { setEditing(false); setError(false) }
                 }}
-                className={`text-xs w-20 border-b outline-none bg-transparent pb-0.5 ${
-                  error ? 'border-red-400 text-red-400' : 'border-[#C17B4E] text-[#C17B4E]'
-                }`}
+                className={`text-xs w-20 border-b outline-none bg-transparent pb-0.5 ${error ? 'border-red-400 text-red-400' : 'border-[#C17B4E] text-[#C17B4E]'}`}
               />
-              {error && (
-                <span className="text-xs text-red-400">try "9:30 AM" or "14:00"</span>
-              )}
+              {error && <span className="text-xs text-red-400">try "9:30 AM" or "14:00"</span>}
             </div>
           ) : (
-            <button
-              onClick={() => !viewOnly && setEditing(true)}
-              title={viewOnly ? undefined : "Click to edit time"}
-              className={`text-xs text-[#8C8070] w-14 shrink-0 text-left transition-colors ${!viewOnly ? 'hover:text-[#C17B4E] cursor-pointer' : 'cursor-default'}`}
-            >
+            <button onClick={() => !viewOnly && setEditing(true)} className={`text-xs text-[#8C8070] w-14 shrink-0 text-left transition-colors ${!viewOnly ? 'hover:text-[#C17B4E] cursor-pointer' : 'cursor-default'}`}>
               {stop.time}
             </button>
           )}
-          <p className="text-sm font-medium text-[#2C2416] truncate">{stop.name}</p>
-          {stop.suggested && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-[#F5F0E8] text-[#8C8070] shrink-0">
-              suggested
-            </span>
+          <div className="relative flex-1 min-w-0">
+            <button
+              onClick={e => {
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                setAnchorRect(rect)
+                setShowPopup(p => !p)
+              }}
+              className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full"
+              title="View place details"
+            >
+              {stop.name}
+            </button>
+            {showPopup && anchorRect && (
+              <PlacePopup
+                stop={stop}
+                destination={destination}
+                anchorRect={anchorRect}
+                onClose={() => setShowPopup(false)}
+              />
+            )}
+          </div>
+          {stop.suggested && <span className="text-xs px-2 py-0.5 rounded-full bg-[#F5F0E8] text-[#8C8070] shrink-0">suggested</span>}
+          {outsideHours && (
+            <button
+              onClick={() => setShowHours(h => !h)}
+              className="shrink-0 text-amber-500 hover:text-amber-600 transition-colors"
+              title="May be closed at this time"
+              aria-label="Hours warning"
+            >
+              ⚠️
+            </button>
+          )}
+          {!outsideHours && hoursLine && (
+            <button
+              onClick={() => setShowHours(h => !h)}
+              className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-[#8C8070] text-xs"
+              title="Show opening hours"
+            >
+              🕐
+            </button>
           )}
         </div>
-        {stop.note && (
-          <p className="text-xs text-[#8C8070] mt-0.5 leading-relaxed pl-16">{stop.note}</p>
+        {showHours && hoursLine && (
+          <p className="text-xs text-[#8C8070] mt-0.5 pl-16">
+            {outsideHours ? <span className="text-amber-500 font-medium">May be closed · </span> : null}
+            {formatHoursShort(hoursLine)}
+          </p>
         )}
+        {editingNote ? (
+          <input autoFocus type="text" defaultValue={stop.note}
+            onBlur={e => { setEditingNote(false); onNoteChange(e.target.value) }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              if (e.key === 'Escape') setEditingNote(false)
+            }}
+            className="text-xs text-[#8C8070] mt-0.5 ml-16 w-[calc(100%-4rem)] bg-transparent border-b border-[#C17B4E] outline-none pb-0.5"
+          />
+        ) : stop.note ? (
+          <p onClick={() => !viewOnly && setEditingNote(true)} className={`text-xs text-[#8C8070] mt-0.5 leading-relaxed pl-16 ${!viewOnly ? 'cursor-pointer hover:text-[#C17B4E] transition-colors' : ''}`}>
+            {stop.note}
+          </p>
+        ) : !viewOnly ? (
+          <button onClick={() => setEditingNote(true)} className="text-xs text-[#C8BFB0] mt-0.5 ml-16 hover:text-[#8C8070] transition-colors opacity-0 group-hover:opacity-100">
+            + add note
+          </button>
+        ) : null}
       </div>
-
-      {/* Delete */}
       {!viewOnly && (
-        <button
-          onClick={onDelete}
-          className="mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none"
-          aria-label="Remove stop"
-        >
-          ×
-        </button>
+        <button onClick={onDelete} className="mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none" aria-label="Remove stop">×</button>
       )}
     </div>
   )
 }
 
-// ── Overlay card shown while dragging ──
+function PlacePopup({ stop, destination, anchorRect, onClose }: {
+  stop: Stop; destination: string; anchorRect: DOMRect; onClose: () => void
+}) {
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.name + (destination ? ` ${destination}` : ''))}`
+  const hoursLine = stop.opening_hours ? getTodayHours(stop.opening_hours) : null
+  const outsideHours = stop.opening_hours && stop.time ? isOutsideHours(stop.time, stop.opening_hours) : false
+  const photoUrl = stop.photo_reference ? `/api/place-photo?ref=${encodeURIComponent(stop.photo_reference)}` : null
+
+  // Position: prefer right of anchor, flip left if near right edge
+  const POPUP_W = 260
+  const POPUP_H = 280
+  const viewW = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const viewH = typeof window !== 'undefined' ? window.innerHeight : 800
+  let left = anchorRect.right + 8
+  if (left + POPUP_W > viewW - 12) left = anchorRect.left - POPUP_W - 8
+  let top = anchorRect.top
+  if (top + POPUP_H > viewH - 12) top = viewH - POPUP_H - 12
+
+  const priceStr = stop.price_level != null ? '$'.repeat(stop.price_level + 1) : null
+
+  // Lazy-fetch place details if we don't already have a photo
+  const [fetched, setFetched] = useState<{
+    photo_reference?: string; rating?: number; price_level?: number
+    address?: string; opening_hours?: string[]
+  } | null>(null)
+  const [fetchLoading, setFetchLoading] = useState(!stop.photo_reference)
+
+  useEffect(() => {
+    if (stop.photo_reference) return // already have it from enrichment
+    setFetchLoading(true)
+    fetch(`/api/place-search?name=${encodeURIComponent(stop.name)}&location=${encodeURIComponent(destination)}`)
+      .then(r => r.json())
+      .then(data => { if (data.result) setFetched(data.result) })
+      .catch(() => {})
+      .finally(() => setFetchLoading(false))
+  }, [stop.name, destination, stop.photo_reference])
+
+  // Merge fetched data with stop data (stop data takes priority if already set)
+  const photoRef = stop.photo_reference || fetched?.photo_reference
+  const resolvedPhotoUrl = photoRef ? `/api/place-photo?ref=${encodeURIComponent(photoRef)}` : null
+  const resolvedRating = stop.rating ?? fetched?.rating
+  const resolvedPriceLevel = stop.price_level ?? fetched?.price_level
+  const resolvedAddress = stop.address || fetched?.address
+  const resolvedHours = stop.opening_hours || fetched?.opening_hours
+  const resolvedHoursLine = resolvedHours ? getTodayHours(resolvedHours) : null
+  const resolvedOutside = resolvedHours && stop.time ? isOutsideHours(stop.time, resolvedHours) : false
+  const resolvedPriceStr = resolvedPriceLevel != null ? '$'.repeat(resolvedPriceLevel + 1) : null
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 bg-white border border-[#E8DFD0] rounded-2xl shadow-2xl overflow-hidden"
+        style={{ left, top, width: POPUP_W }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Photo or loading or fallback */}
+        {fetchLoading ? (
+          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 100 }}>
+            <span className="text-xs text-[#C8BFB0]">Loading...</span>
+          </div>
+        ) : resolvedPhotoUrl ? (
+          <img
+            src={resolvedPhotoUrl}
+            alt={stop.name}
+            className="w-full object-cover"
+            style={{ height: 140 }}
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+          />
+        ) : (
+          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 80 }}>
+            <span className="text-3xl">📍</span>
+          </div>
+        )}
+        <div className="p-3">
+          <p className="text-sm font-semibold text-[#2C2416] leading-snug">{stop.name}</p>
+          {(resolvedRating || resolvedPriceStr) && (
+            <div className="flex items-center gap-2 mt-0.5">
+              {resolvedRating && <span className="text-xs text-[#8C8070]">⭐ {resolvedRating.toFixed(1)}</span>}
+              {resolvedPriceStr && <span className="text-xs text-[#8C8070]">{resolvedPriceStr}</span>}
+            </div>
+          )}
+          {resolvedHoursLine && (
+            <p className={`text-xs mt-1 ${resolvedOutside ? 'text-amber-500 font-medium' : 'text-[#8C8070]'}`}>
+              {resolvedOutside ? '⚠️ May be closed · ' : ''}{formatHoursShort(resolvedHoursLine)}
+            </p>
+          )}
+          {resolvedAddress && (
+            <p className="text-xs text-[#C8BFB0] mt-0.5 truncate">{resolvedAddress}</p>
+          )}
+          <a
+            href={mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2.5 inline-flex items-center gap-1 text-xs text-[#C17B4E] hover:text-[#8B5330] font-medium transition-colors"
+          >
+            Open in Google Maps ↗
+          </a>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function DragOverlayCard({ stop, dayColor }: { stop: Stop; dayColor: string }) {
   return (
     <div className="flex gap-3 px-4 py-3 items-start bg-white border border-[#E8DFD0] rounded-xl shadow-lg">
       <GripIcon />
-      <div
-        className="mt-1.5 w-2 h-2 rounded-full shrink-0"
-        style={{ background: dayColor }}
-      />
+      <div className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: dayColor }} />
       <div className="flex-1">
         <div className="flex items-center gap-2">
           <span className="text-xs text-[#8C8070] w-14 shrink-0">{stop.time}</span>
@@ -210,41 +346,42 @@ function DragOverlayCard({ stop, dayColor }: { stop: Stop; dayColor: string }) {
     </div>
   )
 }
-
-
-// Parse time from text like 'beach 9am' -> { name: 'beach', time: '9:00 AM' }
-function extractTimeFromText(text: string): { name: string; time: string | null } {
-  const m = text.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i)
-  let h = parseInt(m[1])
-  const min = parseInt(m[2] || '0')
-  const p = m[3].toLowerCase()
-  if (p === 'pm' && h !== 12) h += 12
-  if (p === 'am' && h === 12) h = 0
-  const period = h < 12 ? 'AM' : 'PM'
-  const display = h % 12 || 12
-  const time = `${display}:${String(min).padStart(2, '0')} ${period}`
-  const name = text.replace(m[0], '').replace(/\s+/g, ' ').trim()
-  return { name: name || text.trim(), time }
-}
-
-// ── Add place inline input with autocomplete ──
 function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: string, time?: string) => void; destination: string }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0 })
+  const inputRef = useRef<HTMLInputElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const sessionToken = useRef(crypto.randomUUID())
+  const sessionToken = useRef<string>('')
+
+  useEffect(() => { sessionToken.current = crypto.randomUUID() }, [])
+
+  function updatePos() {
+    const el = inputRef.current || wrapperRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width === 0) return
+    setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 280) })
+  }
 
   useEffect(() => {
-    if (!query.trim() || query.length < 2) { setSuggestions([]); return }
+    if (!open) return
+    const t = setTimeout(updatePos, 30)
+    return () => clearTimeout(t)
+  }, [open])
+
+  useEffect(() => {
+    if (!query.trim() || query.length < 2) { setSuggestions([]); setShowSuggestions(false); return }
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(async () => {
       try {
         const res = await fetch(`/api/places-autocomplete?q=${encodeURIComponent(query)}&location=${encodeURIComponent(destination)}&session=${sessionToken.current}`)
         const data = await res.json()
         setSuggestions(data.predictions || [])
-        setShowSuggestions(true)
+        if (data.predictions?.length > 0) { updatePos(); setShowSuggestions(true) }
       } catch { setSuggestions([]) }
     }, 300)
   }, [query, destination])
@@ -269,28 +406,25 @@ function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: str
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="w-full text-left px-4 py-2.5 text-xs text-[#8C8070] hover:text-[#C17B4E] hover:bg-[#FEF8F4] transition-colors flex items-center gap-2"
-      >
+      <button onClick={() => setOpen(true)} className="w-full text-left px-4 py-2.5 text-xs text-[#8C8070] hover:text-[#C17B4E] hover:bg-[#FEF8F4] transition-colors flex items-center gap-2">
         <span className="text-base leading-none">+</span> Add a place
       </button>
     )
   }
 
   return (
-    <div className="relative">
+    <div ref={wrapperRef} className="relative">
       <div className="px-4 py-2.5 flex items-center gap-2 bg-[#FDFAF5]">
         <input
-          autoFocus
-          type="text"
-          value={query}
+          ref={inputRef}
+          autoFocus type="text" value={query}
           onChange={e => setQuery(e.target.value)}
+          onFocus={updatePos}
           onKeyDown={e => {
             if (e.key === 'Enter') { setShowSuggestions(false); handleManualAdd() }
             if (e.key === 'Escape') { setOpen(false); setQuery(''); setShowSuggestions(false) }
           }}
-          placeholder="Search or type a place..."
+          placeholder='e.g. "lunch 1pm" or search a place...'
           className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0]"
         />
         <button onClick={handleManualAdd} className="text-xs text-[#C17B4E] font-medium hover:text-[#8B5330]">Add</button>
@@ -298,14 +432,11 @@ function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: str
       </div>
       {showSuggestions && suggestions.length > 0 && (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setShowSuggestions(false)} />
-          <div className="absolute left-0 right-0 bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-20 max-h-48 overflow-y-auto mx-2">
+          <div className="fixed inset-0 z-40" onClick={() => setShowSuggestions(false)} />
+          <div className="fixed bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"
+            style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}>
             {suggestions.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => handleSelect(s)}
-                className="w-full text-left px-4 py-2.5 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0"
-              >
+              <button key={i} onClick={() => handleSelect(s)} className="w-full text-left px-4 py-2.5 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0">
                 <p className="text-sm text-[#2C2416] font-medium truncate">{s.structured_formatting?.main_text || s.description}</p>
                 <p className="text-xs text-[#8C8070] truncate">{s.structured_formatting?.secondary_text || ''}</p>
               </button>
@@ -317,22 +448,14 @@ function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: str
   )
 }
 
-// ── Main editor ──
 export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '' }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 }
-    })
-  )
-
-  // Helper: recalc times on all days then call onChange
   function update(newDays: Day[]) {
     onChange(newDays.map(d => ({ ...d, stops: recalcTimes(d.stops) })))
   }
 
-  // Flat map of stopId → dayIndex for quick lookup
   function findDayIndexByStopId(stopId: string): number {
     return days.findIndex(d => d.stops.some(s => s.id === stopId))
   }
@@ -341,26 +464,17 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     const stopId = event.active.id as string
     const dayIndex = findDayIndexByStopId(stopId)
     if (dayIndex === -1) return
-    const stop = days[dayIndex].stops.find(s => s.id === stopId)!
-    setActiveStop({ stop, dayIndex })
+    setActiveStop({ stop: days[dayIndex].stops.find(s => s.id === stopId)!, dayIndex })
   }
 
   function handleDragOver(event: DragOverEvent) {
     const { active, over } = event
     if (!over) return
-
     const activeId = active.id as string
     const overId = over.id as string
-
     const activeDayIdx = findDayIndexByStopId(activeId)
-    // over could be a stop id or a day container id (prefixed "day-")
-    const overDayIdx = overId.startsWith('day-')
-      ? days.findIndex(d => `day-${d.day}` === overId)
-      : findDayIndexByStopId(overId)
-
+    const overDayIdx = overId.startsWith('day-') ? days.findIndex(d => `day-${d.day}` === overId) : findDayIndexByStopId(overId)
     if (activeDayIdx === -1 || overDayIdx === -1 || activeDayIdx === overDayIdx) return
-
-    // Move stop to the new day
     const newDays = days.map(d => ({ ...d, stops: [...d.stops] }))
     const stop = newDays[activeDayIdx].stops.find(s => s.id === activeId)!
     newDays[activeDayIdx].stops = newDays[activeDayIdx].stops.filter(s => s.id !== activeId)
@@ -372,144 +486,125 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     const { active, over } = event
     setActiveStop(null)
     if (!over || active.id === over.id) return
-
     const activeId = active.id as string
     const overId = over.id as string
-
     const dayIdx = findDayIndexByStopId(activeId)
     if (dayIdx === -1) return
-
     const stops = days[dayIdx].stops
     const oldIndex = stops.findIndex(s => s.id === activeId)
     const newIndex = stops.findIndex(s => s.id === overId)
     if (oldIndex === -1 || newIndex === -1) return
-
-    const newDays = days.map((d, i) =>
-      i === dayIdx ? { ...d, stops: arrayMove(d.stops, oldIndex, newIndex) } : d
-    )
-    update(newDays)
+    update(days.map((d, i) => i === dayIdx ? { ...d, stops: arrayMove(d.stops, oldIndex, newIndex) } : d))
   }
 
   function updateStopTime(dayIndex: number, stopId: string, time: string) {
     const newDays = days.map((d, i) => {
       if (i !== dayIndex) return d
       const updated = d.stops.map(s => s.id === stopId ? { ...s, time } : s)
-      const sorted = [...updated].sort((a, b) => parseTime(a.time) - parseTime(b.time))
-      return { ...d, stops: sorted } // just sort, don't recalc times
+      return { ...d, stops: [...updated].sort((a, b) => parseTime(a.time) - parseTime(b.time)) }
     })
     onChange(newDays)
   }
 
+  function updateStopNote(dayIndex: number, stopId: string, note: string) {
+    onChange(days.map((d, i) => i === dayIndex ? { ...d, stops: d.stops.map(s => s.id === stopId ? { ...s, note } : s) } : d))
+  }
+
   function deleteStop(dayIndex: number, stopId: string) {
-    const newDays = days.map((d, i) =>
-      i === dayIndex ? { ...d, stops: d.stops.filter(s => s.id !== stopId) } : d
-    )
-    update(newDays)
+    update(days.map((d, i) => i === dayIndex ? { ...d, stops: d.stops.filter(s => s.id !== stopId) } : d))
   }
 
   function addStop(dayIndex: number, name: string, note?: string, explicitTime?: string) {
     const day = days[dayIndex]
-    const newStop: Stop = {
-      id: `manual-${Date.now()}-${Math.random()}`,
-      name,
-      time: formatHour(9 + day.stops.length * 2),
-      category: 'other',
-      note: note || '',
-      suggested: false,
+    const time = explicitTime || formatHour(9 + day.stops.length * 2)
+    const newStop: Stop = { id: `manual-${Date.now()}-${Math.random()}`, name, time, category: 'other', note: note || '', suggested: false }
+    // If explicit time, sort after inserting; otherwise just append and recalc
+    if (explicitTime) {
+      const newStops = [...day.stops, newStop].sort((a, b) => parseTime(a.time) - parseTime(b.time))
+      onChange(days.map((d, i) => i === dayIndex ? { ...d, stops: newStops } : d))
+    } else {
+      update(days.map((d, i) => i === dayIndex ? { ...d, stops: [...d.stops, newStop] } : d))
     }
-    const newDays = days.map((d, i) =>
-      i === dayIndex ? { ...d, stops: [...d.stops, newStop] } : d
-    )
-    update(newDays)
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragEnd={handleDragEnd}
-    >
+    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
       <div className="flex flex-col gap-6">
         {days.map((day, dayIndex) => {
           const color = DAY_COLORS[dayIndex % DAY_COLORS.length]
           return (
-            <div
-              key={day.day}
-              id={`day-${day.day}`}
-              className="bg-white border border-[#E8DFD0] rounded-2xl overflow-hidden"
-            >
-              {/* Day header */}
-              <div
-                className="px-5 py-3 flex items-center gap-3"
-                style={{ background: `${color}15` }}
-              >
+            <div key={day.day} id={`day-${day.day}`} className="bg-white border border-[#E8DFD0] rounded-2xl overflow-visible">
+              <div className="px-5 py-3 flex items-center gap-3 rounded-t-2xl" style={{ background: `${color}15` }}>
                 <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                <span
-                  className="text-xs font-medium uppercase tracking-widest"
-                  style={{ color }}
-                >
-                  Day {day.day}
-                </span>
+                <span className="text-xs font-medium uppercase tracking-widest" style={{ color }}>Day {day.day}</span>
                 <span className="text-sm font-medium text-[#2C2416]">{day.title}</span>
-                {getDayDate(startDate, dayIndex) && (
-                  <span className="text-xs text-[#8C8070] ml-1">
-                    · {getDayDate(startDate, dayIndex)}
-                  </span>
-                )}
+                {getDayDate(startDate, dayIndex) && <span className="text-xs text-[#8C8070] ml-1">· {getDayDate(startDate, dayIndex)}</span>}
                 <span className="ml-auto text-xs text-[#C8BFB0]">{day.stops.length} stops</span>
               </div>
-
-              {/* Stops */}
-              <SortableContext
-                items={day.stops.map(s => s.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                {day.stops.map(stop => (
-                  <StopRow
-                    key={stop.id}
-                    stop={stop}
-                    dayColor={color}
-                    onDelete={() => deleteStop(dayIndex, stop.id)}
-                    onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
-                    viewOnly={viewOnly}
-                  />
-                ))}
-              </SortableContext>
-
-              {/* Add stop */}
-              {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time) => addStop(dayIndex, name, note, time)} />}
+              <div className="border border-[#E8DFD0] rounded-b-2xl overflow-hidden">
+                <SortableContext items={day.stops.map(s => s.id)} strategy={verticalListSortingStrategy}>
+                  {day.stops.map(stop => (
+                    <StopRow key={stop.id} stop={stop} dayColor={color}
+                      onDelete={() => deleteStop(dayIndex, stop.id)}
+                      onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
+                      onNoteChange={note => updateStopNote(dayIndex, stop.id, note)}
+                      viewOnly={viewOnly}
+                      destination={destination}
+                    />
+                  ))}
+                </SortableContext>
+                {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time) => addStop(dayIndex, name, note, time)} />}
+              </div>
             </div>
           )
         })}
       </div>
-
-      {/* Drag overlay */}
       <DragOverlay>
-        {activeStop && (
-          <DragOverlayCard
-            stop={activeStop.stop}
-            dayColor={DAY_COLORS[activeStop.dayIndex % DAY_COLORS.length]}
-          />
-        )}
+        {activeStop && <DragOverlayCard stop={activeStop.stop} dayColor={DAY_COLORS[activeStop.dayIndex % DAY_COLORS.length]} />}
       </DragOverlay>
     </DndContext>
   )
 }
 
-// Recalculate times for all stops in a day starting at 9 AM, 2hr intervals
-// Stops with manualTime=true anchor their position; auto stops fill gaps
-export function recalcTimes(stops: Stop[]): Stop[] {
-  // Simple sequential reassignment — just space them 2hrs apart from 9 AM
-  return stops.map((stop, i) => ({
-    ...stop,
-    time: formatHour(9 + i * 2),
-    manualTime: false, // reset after reorder so times stay in sync
-  }))
+const CATEGORY_HOUR: Record<string, number> = {
+  // Morning only
+  cafe: 9, bakery: 8, breakfast: 8, coffee: 9, brunch: 10,
+  // Late morning
+  market: 10, park: 10, garden: 10, hike: 9, trail: 9, nature: 10,
+  // Midday
+  lunch: 12, food: 12,
+  // Afternoon
+  museum: 14, gallery: 14, shopping: 15, landmark: 14, monument: 14,
+  temple: 14, church: 14, tour: 14,
+  // Flexible
+  beach: 11, viewpoint: 17, sunset: 18,
+  // Evening only — never schedule these in the morning
+  restaurant: 19, dinner: 19, bar: 20, nightlife: 21, pub: 20, club: 22,
+}
+function preferredHour(category: string): number {
+  const cat = (category || '').toLowerCase()
+  for (const [key, hour] of Object.entries(CATEGORY_HOUR)) {
+    if (cat.includes(key)) return hour
+  }
+  return 12
 }
 
-// Parse "9:00 AM" → minutes since midnight for sorting
+export function recalcTimes(stops: Stop[]): Stop[] {
+  // Assign category-aware times, then sort chronologically
+  const timed = stops.map(stop => ({ ...stop, time: formatHour(preferredHour(stop.category)), manualTime: false }))
+  timed.sort((a, b) => parseTime(a.time) - parseTime(b.time))
+  // Space out stops that land on the same hour
+  for (let i = 1; i < timed.length; i++) {
+    if (parseTime(timed[i].time) <= parseTime(timed[i - 1].time)) {
+      const prev = parseTime(timed[i - 1].time)
+      const newMin = prev + 90
+      const h = Math.floor(newMin / 60) % 24
+      timed[i] = { ...timed[i], time: formatHour(h) }
+    }
+  }
+  return timed
+}
+
 function parseTime(t: string): number {
   const m = t.match(/(\d+):(\d+)\s*(AM|PM)/i)
   if (!m) return 0
@@ -521,34 +616,26 @@ function parseTime(t: string): number {
   return h * 60 + min
 }
 
-// Normalize user input into "H:MM AM/PM", returns null if unparseable
-function normalizeTimeInput(raw: string): string | null {
-  const s = raw.trim().toLowerCase().replace(/[.\-]/g, ':')
-
-  // Match patterns like: 11pm, 11:00pm, 11.00pm, 9am, 9:30 am, 23:00, 9, 14
-  const m = s.match(/^(\d{1,2})(?::(\d{2}))?(?:\s*(am|pm))?$/)
-  if (!m) return null
-
-  let h = parseInt(m[1])
-  const min = parseInt(m[2] || '0')
-  const meridiem = m[3]
-
-  if (min < 0 || min > 59) return null
-
-  if (meridiem === 'pm' && h !== 12) h += 12
-  else if (meridiem === 'am' && h === 12) h = 0
-  else if (!meridiem && h > 23) return null
-  // 24h format with no meridiem
-  if (h > 23) return null
-
-  const period = h < 12 ? 'AM' : 'PM'
-  const display = h % 12 || 12
-  return `${display}:${String(min).padStart(2, '0')} ${period}`
-}
-
 function formatHour(hour: number): string {
   const h = hour % 24
   const period = h < 12 ? 'AM' : 'PM'
   const display = h % 12 || 12
   return `${display}:00 ${period}`
+}
+
+function normalizeTimeInput(raw: string): string | null {
+  const s = raw.trim().toLowerCase().replace(/[.\-]/g, ':')
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?(?:\s*(am|pm))?$/)
+  if (!m) return null
+  let h = parseInt(m[1])
+  const min = parseInt(m[2] || '0')
+  const meridiem = m[3]
+  if (min < 0 || min > 59) return null
+  if (meridiem === 'pm' && h !== 12) h += 12
+  else if (meridiem === 'am' && h === 12) h = 0
+  else if (!meridiem && h > 23) return null
+  if (h > 23) return null
+  const period = h < 12 ? 'AM' : 'PM'
+  const display = h % 12 || 12
+  return `${display}:${String(min).padStart(2, '0')} ${period}`
 }

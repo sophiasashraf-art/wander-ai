@@ -194,7 +194,6 @@ export default function Home() {
     setSaved(true)
     setStartDate(trip.start_date || '')
     if (trip.itinerary?.days) {
-      setItinerary(trip.itinerary)
       const normalized: Day[] = trip.itinerary.days.map((day: any) => ({
         ...day,
         stops: day.stops.map((stop: any, i: number) => ({
@@ -267,9 +266,25 @@ export default function Home() {
     if ((!input.trim() && places.length === 0) || !destination.trim()) return
     setLoading(true)
     setSaved(false)
-    setItinerary(null)
 
     let currentTripId = tripId
+    let isNewTrip = false
+
+    // If destination changed from the saved trip, start fresh
+    if (currentTripId) {
+      const { data: existingTrip } = await supabase.from('trips').select('destination').eq('id', currentTripId).single()
+      if (existingTrip && existingTrip.destination !== destination) {
+        currentTripId = null
+        setTripId(null)
+        setPlaces([])
+        setItinerary(null)
+        setEditableDays([])
+        isNewTrip = true
+      }
+    } else {
+      isNewTrip = true
+    }
+
     if (!currentTripId) {
       const { data: trip, error: tripError } = await supabase
         .from('trips')
@@ -292,16 +307,16 @@ export default function Home() {
       return
     }
 
-    // Detect if input looks like an existing itinerary (has times + day structure)
-    const looksLikeItinerary = /(\d{1,2}:\d{2}\s*(AM|PM).*\n.*){2,}/i.test(input) ||
-      /(day\s*\d|monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(AM|PM)/i.test(input)
+    // Check if input has URLs — those need scraping via extract-places
+    const hasUrls = /(https?:\/\/[^\s]+)/g.test(input)
 
-    if (looksLikeItinerary) {
-      // Import directly preserving structure
+    if (!hasUrls) {
+      // Use import-itinerary for all text input — it preserves any structure/times
+      // and still works fine for unstructured lists
       const importRes = await fetch('/api/import-itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: input, tripId: currentTripId, destination }),
+        body: JSON.stringify({ text: input, tripId: currentTripId, destination, duration }),
       })
       const importData = await importRes.json()
       if (importData.days?.length > 0) {
@@ -314,13 +329,29 @@ export default function Home() {
         }))
         setItinerary({ days: normalized })
         setEditableDays(normalized)
+        // Update places state so map markers work
+        if (importData.places?.length > 0) {
+          if (isNewTrip) {
+            setPlaces(importData.places)
+          } else {
+            setPlaces(prev => {
+              const existingNames = new Set(prev.map((p: any) => p.name.toLowerCase().trim()))
+              const newPlaces = importData.places.filter((p: any) => !existingNames.has(p.name.toLowerCase().trim()))
+              return [...prev, ...newPlaces]
+            })
+          }
+        }
         if (importData.startDate) setStartDate(importData.startDate)
+        // Persist itinerary to Supabase
+        await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', currentTripId!)
+        window.history.replaceState({}, '', `?trip=${currentTripId}`)
         setSaved(true)
         setLoading(false)
         return
       }
     }
 
+    // Fallback: extract-places (for URLs or if import returned nothing)
     const res = await fetch('/api/extract-places', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -329,12 +360,15 @@ export default function Home() {
 
     const data = await res.json()
     const newPlaces = data.places || []
-    // Merge with existing — don't overwrite manually added places
-    setPlaces(prev => {
-      const existingNames = new Set(prev.map((p: any) => p.name.toLowerCase().trim()))
-      const merged = [...prev, ...newPlaces.filter((p: any) => !existingNames.has(p.name.toLowerCase().trim()))]
-      return merged
-    })
+    if (isNewTrip) {
+      setPlaces(newPlaces)
+    } else {
+      setPlaces(prev => {
+        const existingNames = new Set(prev.map((p: any) => p.name.toLowerCase().trim()))
+        const merged = [...prev, ...newPlaces.filter((p: any) => !existingNames.has(p.name.toLowerCase().trim()))]
+        return merged
+      })
+    }
     setSaved(true)
     setLoading(false)
   }
@@ -359,19 +393,54 @@ export default function Home() {
 
     const data = await res.json()
     setItinerary(data)
-    // Normalize: give every stop a stable id
-    const normalized: Day[] = (data.days || []).map((day: any) => ({
+
+    // Normalize AI-generated days: give every stop a stable id
+    const aiDays: Day[] = (data.days || []).map((day: any) => ({
       ...day,
       stops: day.stops.map((stop: any, i: number) => ({
         ...stop,
         id: stop.id || `${day.day}-${i}-${stop.name}`,
       })),
     }))
-    if (editableDays.length > 0) snapshotAndReplace(normalized)
-    else handleDaysChange(normalized)
+
+    // Merge with any manually-added stops, deduplicating by name
+    let merged: Day[]
+    if (editableDays.length > 0) {
+      // Collect all manually-added stop names (case-insensitive)
+      const manualStopNames = new Set(
+        editableDays.flatMap(d => d.stops.map(s => s.name.toLowerCase().trim()))
+      )
+      // Remove AI stops that duplicate manual ones
+      const dedupedAiDays = aiDays.map(aiDay => {
+        const existingDay = editableDays.find(d => d.day === aiDay.day)
+        const manualStops = existingDay?.stops || []
+        const manualNames = new Set(manualStops.map(s => s.name.toLowerCase().trim()))
+        const newAiStops = aiDay.stops.filter(
+          (s: any) => !manualNames.has(s.name.toLowerCase().trim())
+        )
+        // Merge: manual stops first, then new AI stops, re-sort by time
+        const combined = [...manualStops, ...newAiStops]
+        combined.sort((a, b) => {
+          const parse = (t: string) => {
+            const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+            if (!m) return 0
+            let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
+            if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
+            return h * 60 + min
+          }
+          return parse(a.time) - parse(b.time)
+        })
+        return { ...aiDay, stops: combined }
+      })
+      merged = dedupedAiDays
+      snapshotAndReplace(merged)
+    } else {
+      merged = aiDays
+      handleDaysChange(merged)
+    }
 
     // Save itinerary to Supabase + put trip in URL
-    await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', tripId)
+    await supabase.from('trips').update({ itinerary: { days: merged } }).eq('id', tripId)
     window.history.replaceState({}, '', `?trip=${tripId}`)
 
     setGenerating(false)
@@ -477,6 +546,21 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        {/* Start date */}
+        {mounted && <>
+        <div className="flex items-center gap-2 mb-3 pl-1 flex-wrap">
+          <span className="text-xs text-[#8C8070]">Start date</span>
+          <input
+            type="date"
+            min="2026-01-01"
+            value={startDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 outline-none text-sm text-[#2C2416] focus:border-[#C17B4E] transition-colors"
+          />
+          <span className="text-xs text-[#C8BFB0]">optional</span>
+        </div>
+        </>}
 
         {/* Vibe selector */}
         <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 mb-3">
@@ -694,6 +778,7 @@ export default function Home() {
                 <span className="text-xs text-[#8C8070]">Start date:</span>
                 <input
                   type="date"
+                  min="2026-01-01"
                   value={startDate}
                   onChange={e => setStartDate(e.target.value)}
                   className="bg-transparent outline-none text-sm text-[#2C2416]"
@@ -720,6 +805,7 @@ export default function Home() {
                 <span className="text-xs text-[#8C8070]">Start:</span>
                 <input
                   type="date"
+                  min="2026-01-01"
                   value={startDate}
                   onChange={e => handleStartDateChange(e.target.value)}
                   className="bg-transparent outline-none text-sm text-[#2C2416]"

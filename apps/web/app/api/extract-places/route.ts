@@ -28,11 +28,12 @@ async function scrapeUrl(url: string): Promise<string> {
   return ''
 }
 
-async function enrichWithCoordinates(place: any): Promise<any> {
+async function enrichWithCoordinates(place: any, destination?: string): Promise<any> {
   try {
+    const searchQuery = [place.name, place.city, destination].filter(Boolean).join(' ')
     const response = await maps.findPlaceFromText({
       params: {
-        input: `${place.name} ${place.city}`,
+        input: searchQuery,
         inputtype: 'textquery' as any,
         fields: ['geometry', 'name', 'formatted_address', 'place_id'] as any,        key: process.env.GOOGLE_PLACES_API_KEY!,
       }
@@ -83,8 +84,15 @@ export async function POST(req: Request) {
     const result = JSON.parse(response.choices[0].message.content || '{"places":[]}')
 
     // Enrich all places with real coordinates from Google Places
+    // Get destination from the trip if available
+    let destination = ''
+    if (tripId) {
+      const { data: trip } = await supabase.from('trips').select('destination').eq('id', tripId).single()
+      destination = trip?.destination || ''
+    }
+
     const enrichedPlaces = await Promise.all(
-      result.places.map((p: any) => enrichWithCoordinates(p))
+      result.places.map((p: any) => enrichWithCoordinates(p, destination))
     )
 
     console.log('enriched places:', enrichedPlaces.map((p: any) => `${p.name}: ${p.lat},${p.lng}`))
