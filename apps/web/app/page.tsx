@@ -44,6 +44,196 @@ function ShareButton({ onShare }: { onShare: (viewOnly: boolean) => void }) {
 
 const DAY_COLORS = ['#C17B4E', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
+// ── Place popup for extracted places list ──
+function PlaceListPopup({ name, destination, anchorRect, onClose }: {
+  name: string; destination: string; anchorRect: DOMRect; onClose: () => void
+}) {
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name + (destination ? ` ${destination}` : ''))}`
+  const POPUP_W = 260
+  const POPUP_H = 280
+  const viewW = window.innerWidth
+  const viewH = window.innerHeight
+  let left = anchorRect.right + 8
+  if (left + POPUP_W > viewW - 12) left = anchorRect.left - POPUP_W - 8
+  let top = anchorRect.top
+  if (top + POPUP_H > viewH - 12) top = viewH - POPUP_H - 12
+
+  const [fetched, setFetched] = useState<any>(null)
+  const [fetchLoading, setFetchLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(`/api/place-search?name=${encodeURIComponent(name)}&location=${encodeURIComponent(destination)}`)
+      .then(r => r.json())
+      .then(data => { if (data.result) setFetched(data.result) })
+      .catch(() => {})
+      .finally(() => setFetchLoading(false))
+  }, [name, destination])
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const photoUrl = fetched?.photo_reference ? `/api/place-photo?ref=${encodeURIComponent(fetched.photo_reference)}` : null
+  const priceStr = fetched?.price_level != null ? '$'.repeat(fetched.price_level + 1) : null
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 bg-white border border-[#E8DFD0] rounded-2xl shadow-2xl overflow-hidden"
+        style={{ left, top, width: POPUP_W }}
+        onClick={e => e.stopPropagation()}
+      >
+        {fetchLoading ? (
+          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 100 }}>
+            <span className="text-xs text-[#C8BFB0]">Loading...</span>
+          </div>
+        ) : photoUrl ? (
+          <img src={photoUrl} alt={name} className="w-full object-cover" style={{ height: 140 }}
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+        ) : (
+          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 80 }}>
+            <span className="text-3xl">📍</span>
+          </div>
+        )}
+        <div className="p-3">
+          <p className="text-sm font-semibold text-[#2C2416] leading-snug">{name}</p>
+          {(fetched?.rating || priceStr) && (
+            <div className="flex items-center gap-2 mt-0.5">
+              {fetched?.rating && <span className="text-xs text-[#8C8070]">⭐ {fetched.rating.toFixed(1)}</span>}
+              {priceStr && <span className="text-xs text-[#8C8070]">{priceStr}</span>}
+            </div>
+          )}
+          {fetched?.address && <p className="text-xs text-[#C8BFB0] mt-0.5 truncate">{fetched.address}</p>}
+          <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+            className="mt-2.5 inline-flex items-center gap-1 text-xs text-[#C17B4E] hover:text-[#8B5330] font-medium transition-colors">
+            Open in Google Maps ↗
+          </a>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── Place list item with popup ──
+function PlaceListItem({ place, destination, categoryColors, onRemove }: {
+  place: any; destination: string
+  categoryColors: Record<string, string>; onRemove: () => void
+}) {
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
+  const isGeolocated = !!(place.lat && place.lng)
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 border-b border-[#F5F0E8] last:border-0 group relative">
+      <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#C17B4E]" />
+      <div className="flex-1 min-w-0">
+        {isGeolocated ? (
+          <button
+            onClick={e => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+              setAnchorRect(prev => prev ? null : rect)
+            }}
+            className="text-sm text-[#2C2416] font-medium hover:text-[#C17B4E] transition-colors text-left"
+          >
+            {place.name}
+          </button>
+        ) : (
+          <span className="text-sm text-[#2C2416] font-medium">{place.name}</span>
+        )}
+        {place.city && <span className="text-xs text-[#8C8070] ml-2">{place.city}</span>}
+      </div>
+      <span className={`text-xs shrink-0 ${categoryColors[place.category] || 'text-[#8C8070]'}`}>
+        {place.category}
+      </span>
+      <button
+        onClick={onRemove}
+        className="opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 text-lg leading-none shrink-0"
+      >
+        ×
+      </button>
+      {anchorRect && (
+        <PlaceListPopup
+          name={place.name}
+          destination={destination}
+          anchorRect={anchorRect}
+          onClose={() => setAnchorRect(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Image upload for AI scraper ──
+function ImageUpload({ onExtracted }: { onExtracted: (text: string) => void }) {
+  const [loading, setLoading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [previews, setPreviews] = useState<string[]>([])
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  async function processFiles(files: File[]) {
+    const images = files.filter(f => f.type.startsWith('image/'))
+    if (!images.length) return
+    setPreviews(prev => [...prev, ...images.map(f => URL.createObjectURL(f))])
+    setLoading(true)
+    try {
+      const results = await Promise.all(
+        images.map(async file => {
+          const fd = new FormData()
+          fd.append('image', file)
+          const res = await fetch('/api/extract-from-image', { method: 'POST', body: fd })
+          const data = await res.json()
+          return data.text?.trim() || ''
+        })
+      )
+      const combined = results.filter(Boolean).join('\n')
+      if (combined) onExtracted(combined)
+    } catch {}
+    setLoading(false)
+  }
+
+  return (
+    <div className="mt-3">
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={e => { e.preventDefault(); setDragOver(false); processFiles(Array.from(e.dataTransfer.files)) }}
+        onClick={() => inputRef.current?.click()}
+        className={`border-2 border-dashed rounded-xl px-4 py-3 cursor-pointer transition-colors ${
+          dragOver ? 'border-[#C17B4E] bg-[#FEF8F4]' : 'border-[#E8DFD0] hover:border-[#C17B4E] hover:bg-[#FEF8F4]'
+        }`}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={e => { if (e.target.files?.length) processFiles(Array.from(e.target.files)) }}
+        />
+        {previews.length > 0 ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            {previews.map((src, i) => (
+              <img key={i} src={src} alt="" className="w-10 h-10 object-cover rounded-lg shrink-0" />
+            ))}
+            <span className="text-xs text-[#8C8070]">
+              {loading ? 'Reading images...' : `✓ ${previews.length} image${previews.length > 1 ? 's' : ''} extracted — click to add more`}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <span className="text-lg">📷</span>
+            <span className="text-xs text-[#8C8070]">
+              {loading ? 'Reading image...' : 'Drop screenshots or click to upload — select multiple at once'}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
   const [destination, setDestination] = useState('')
   const [duration, setDuration] = useState(3)
@@ -67,6 +257,7 @@ export default function Home() {
   const [viewOnly, setViewOnly] = useState(false)
   const [shareToast, setShareToast] = useState<string | null>(null)
   const [inputTab, setInputTab] = useState<'ai' | 'manual'>('ai')
+  const [buildMode, setBuildMode] = useState<'ai' | 'build'>('ai')
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -80,9 +271,23 @@ export default function Home() {
   }
 
   // When destination + duration change and no itinerary yet, show empty days
+  // But don't overwrite days that already have manually-entered stops
   useEffect(() => {
     if (!tripSaved && !itinerary && destination.trim() && duration > 0) {
-      setEditableDays(buildEmptyDays(duration))
+      setEditableDays(prev => {
+        const hasManualStops = prev.some(d => d.stops.length > 0)
+        if (hasManualStops) {
+          // Just resize: add/remove days without touching existing stops
+          if (prev.length === duration) return prev
+          if (prev.length < duration) {
+            return [...prev, ...Array.from({ length: duration - prev.length }, (_, i) => ({
+              day: prev.length + i + 1, title: `Day ${prev.length + i + 1}`, stops: [],
+            }))]
+          }
+          return prev.slice(0, duration)
+        }
+        return buildEmptyDays(duration)
+      })
     }
   }, [duration, destination, tripSaved, itinerary])
 
@@ -267,6 +472,9 @@ export default function Home() {
     setLoading(true)
     setSaved(false)
 
+    // Capture manual stops before any async operations
+    const currentDays = editableDays
+
     let currentTripId = tripId
     let isNewTrip = false
 
@@ -278,7 +486,8 @@ export default function Home() {
         setTripId(null)
         setPlaces([])
         setItinerary(null)
-        setEditableDays([])
+        // Only clear days if destination actually changed (new trip context)
+        setEditableDays(buildEmptyDays(duration))
         isNewTrip = true
       }
     } else {
@@ -320,15 +529,21 @@ export default function Home() {
       })
       const importData = await importRes.json()
       if (importData.days?.length > 0) {
-        const normalized = importData.days.map((day: any, i: number) => ({
+        const normalized: Day[] = importData.days.map((day: any, i: number) => ({
           ...day,
           stops: day.stops.map((stop: any, j: number) => ({
             ...stop,
             id: `imported-${i}-${j}-${stop.name}`,
           })),
         }))
-        setItinerary({ days: normalized })
-        setEditableDays(normalized)
+        // If the API redistributed an unstructured list, use it as-is (full replace)
+        // Otherwise merge with any manually-entered stops
+        const finalDays = importData.redistributed
+          ? normalized
+          : mergeIntoExisting(normalized, currentDays)
+        setItinerary({ days: finalDays })
+        if (currentDays.some(d => d.stops.length > 0)) snapshotAndReplace(finalDays)
+        else handleDaysChange(finalDays)
         // Update places state so map markers work
         if (importData.places?.length > 0) {
           if (isNewTrip) {
@@ -341,9 +556,11 @@ export default function Home() {
             })
           }
         }
-        if (importData.startDate) setStartDate(importData.startDate)
-        // Persist itinerary to Supabase
-        await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', currentTripId!)
+        // Only use extracted date if user hasn't set one and it's a valid future date (2026+)
+        if (importData.startDate && !startDate && importData.startDate >= '2026-01-01') {
+          setStartDate(importData.startDate)
+        }
+        await supabase.from('trips').update({ itinerary: { days: finalDays } }).eq('id', currentTripId!)
         window.history.replaceState({}, '', `?trip=${currentTripId}`)
         setSaved(true)
         setLoading(false)
@@ -373,12 +590,40 @@ export default function Home() {
     setLoading(false)
   }
 
+  // Merge incoming days into existing editableDays, preserving manual stops and their times
+  function mergeIntoExisting(incomingDays: Day[], existing: Day[]): Day[] {
+    if (existing.length === 0) return incomingDays
+    return incomingDays.map(incomingDay => {
+      const existingDay = existing.find(d => d.day === incomingDay.day)
+      const manualStops = existingDay?.stops || []
+      const manualNames = new Set(manualStops.map(s => s.name.toLowerCase().trim()))
+      // Only add AI stops that aren't already manually entered
+      const newAiStops = incomingDay.stops.filter(
+        (s: any) => !manualNames.has(s.name.toLowerCase().trim())
+      )
+      // Manual stops go first (preserving their order and times), AI stops appended after
+      // Sort only the AI stops among themselves, don't re-sort manual stops
+      const parseMin = (t: string) => {
+        const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+        if (!m) return 0
+        let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
+        if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
+        return h * 60 + min
+      }
+      newAiStops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
+      return { ...incomingDay, stops: [...manualStops, ...newAiStops] }
+    })
+  }
+
   async function handleGenerateItinerary() {
     if (!tripId) {
       console.error('No tripId — please extract places first')
       return
     }
     setGenerating(true)
+
+    // Capture current manual stops before any async operations
+    const currentDays = editableDays
 
     await supabase
       .from('trips')
@@ -392,6 +637,14 @@ export default function Home() {
     })
 
     const data = await res.json()
+
+    // If generate returned no days (e.g. no geocoded places in Supabase),
+    // keep the existing itinerary — the user already has their work
+    if (!data.days?.length) {
+      setGenerating(false)
+      return
+    }
+
     setItinerary(data)
 
     // Normalize AI-generated days: give every stop a stable id
@@ -403,44 +656,53 @@ export default function Home() {
       })),
     }))
 
-    // Merge with any manually-added stops, deduplicating by name
-    let merged: Day[]
-    if (editableDays.length > 0) {
-      // Collect all manually-added stop names (case-insensitive)
-      const manualStopNames = new Set(
-        editableDays.flatMap(d => d.stops.map(s => s.name.toLowerCase().trim()))
+    // If user already has a working itinerary, only add NEW places — never touch existing stops
+    const hasExistingWork = currentDays.some(d => d.stops.length > 0)
+    const isRegenerate = !!itinerary // user already had an itinerary before clicking
+
+    let finalDays: Day[]
+    if (hasExistingWork && !isRegenerate) {
+      // First-time generate with manual pre-work: merge AI output with manual stops
+      const existingNames = new Set(
+        currentDays.flatMap(d => d.stops.map(s => s.name.toLowerCase().trim()))
       )
-      // Remove AI stops that duplicate manual ones
-      const dedupedAiDays = aiDays.map(aiDay => {
-        const existingDay = editableDays.find(d => d.day === aiDay.day)
-        const manualStops = existingDay?.stops || []
-        const manualNames = new Set(manualStops.map(s => s.name.toLowerCase().trim()))
-        const newAiStops = aiDay.stops.filter(
-          (s: any) => !manualNames.has(s.name.toLowerCase().trim())
-        )
-        // Merge: manual stops first, then new AI stops, re-sort by time
-        const combined = [...manualStops, ...newAiStops]
-        combined.sort((a, b) => {
-          const parse = (t: string) => {
-            const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
-            if (!m) return 0
-            let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
-            if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
-            return h * 60 + min
-          }
-          return parse(a.time) - parse(b.time)
+      const newAiStops = aiDays.flatMap(d => d.stops).filter(
+        (s: any) => !existingNames.has(s.name.toLowerCase().trim())
+      )
+      if (newAiStops.length === 0) {
+        finalDays = currentDays
+      } else {
+        finalDays = currentDays.map((existingDay) => {
+          const matchingAiDay = aiDays.find(d => d.day === existingDay.day)
+          if (!matchingAiDay) return existingDay
+          const newForThisDay = matchingAiDay.stops.filter(
+            (s: any) => !existingNames.has(s.name.toLowerCase().trim())
+          )
+          if (newForThisDay.length === 0) return existingDay
+          const combined = [...existingDay.stops, ...newForThisDay]
+          combined.sort((a, b) => {
+            const parseMin = (t: string) => {
+              const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+              if (!m) return 0
+              let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
+              if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
+              return h * 60 + min
+            }
+            return parseMin(a.time) - parseMin(b.time)
+          })
+          return { ...existingDay, stops: combined }
         })
-        return { ...aiDay, stops: combined }
-      })
-      merged = dedupedAiDays
-      snapshotAndReplace(merged)
+      }
+      snapshotAndReplace(finalDays)
     } else {
-      merged = aiDays
-      handleDaysChange(merged)
+      // Regenerate or first generate with no manual work — use AI output as-is
+      finalDays = aiDays
+      if (currentDays.some(d => d.stops.length > 0)) snapshotAndReplace(finalDays)
+      else handleDaysChange(finalDays)
     }
 
     // Save itinerary to Supabase + put trip in URL
-    await supabase.from('trips').update({ itinerary: { days: merged } }).eq('id', tripId)
+    await supabase.from('trips').update({ itinerary: { days: finalDays } }).eq('id', tripId)
     window.history.replaceState({}, '', `?trip=${tripId}`)
 
     setGenerating(false)
@@ -458,12 +720,14 @@ export default function Home() {
   const mapMarkers = editableDays.flatMap((day: Day, dayIndex: number) =>
     day.stops
       .map((stop: any) => {
-        const place = places.find(p => p.name === stop.name)
-        if (!place?.lat || !place?.lng) return null
+        // First check if the stop itself has coordinates (from import-itinerary enrichment)
+        const lat = stop.lat ?? places.find((p: any) => p.name.toLowerCase().trim() === stop.name.toLowerCase().trim())?.lat
+        const lng = stop.lng ?? places.find((p: any) => p.name.toLowerCase().trim() === stop.name.toLowerCase().trim())?.lng
+        if (!lat || !lng) return null
         return {
           name: stop.name,
-          lat: place.lat,
-          lng: place.lng,
+          lat,
+          lng,
           day: day.day,
           color: DAY_COLORS[dayIndex % DAY_COLORS.length],
         }
@@ -590,71 +854,135 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Tabbed input: AI Scraper vs Manual */}
-        {mounted && <div className="bg-white border border-[#E8DFD0] rounded-2xl mb-4 overflow-hidden">
-          {/* Tab bar */}
-          <div className="flex border-b border-[#E8DFD0]">
+        {/* Mode picker */}
+        {mounted && (
+          <div className="grid grid-cols-2 gap-3 mb-4">
             <button
-              onClick={() => setInputTab('ai')}
-              className={`flex-1 py-3 text-xs font-medium uppercase tracking-widest transition-colors ${
-                inputTab === 'ai'
-                  ? 'text-[#C17B4E] border-b-2 border-[#C17B4E] -mb-px'
-                  : 'text-[#8C8070] hover:text-[#2C2416]'
+              onClick={() => setBuildMode('ai')}
+              className={`p-4 rounded-2xl border text-left transition-all ${
+                buildMode === 'ai'
+                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
+                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
               }`}
             >
-              ✨ AI Scraper
+              <div className="text-xl mb-1">✨</div>
+              <div className="text-xs font-medium text-[#2C2416]">AI Scraper</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">Paste links or notes, AI builds it</div>
             </button>
             <button
-              onClick={() => setInputTab('manual')}
-              className={`flex-1 py-3 text-xs font-medium uppercase tracking-widest transition-colors ${
-                inputTab === 'manual'
-                  ? 'text-[#C17B4E] border-b-2 border-[#C17B4E] -mb-px'
-                  : 'text-[#8C8070] hover:text-[#2C2416]'
+              onClick={() => setBuildMode('build')}
+              className={`p-4 rounded-2xl border text-left transition-all ${
+                buildMode === 'build'
+                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
+                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
               }`}
             >
-              🔍 Add manually
+              <div className="text-xl mb-1">🗓️</div>
+              <div className="text-xs font-medium text-[#2C2416]">Build your own</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">Add places day by day yourself</div>
             </button>
           </div>
+        )}
 
-          {/* AI tab */}
-          {inputTab === 'ai' && (
-            <div className="p-5">
-              <p className="text-xs text-[#8C8070] mb-3">Paste links, restaurant names, or notes — AI extracts the places for you.</p>
-              <textarea
-                className="w-full bg-transparent outline-none text-[#2C2416] text-sm leading-relaxed resize-none placeholder:text-[#8C8070]"
-                rows={5}
-                placeholder={"Example:\n- Scripps Pier for photos\n- Brunch in La Jolla\n- https://sandiego.eater.com/..."}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-              />
+        {/* AI Scraper mode */}
+        {mounted && buildMode === 'ai' && (
+          <div className="bg-white border border-[#E8DFD0] rounded-2xl mb-4 overflow-hidden">
+            <div className="flex border-b border-[#E8DFD0]">
+              <button
+                onClick={() => setInputTab('ai')}
+                className={`flex-1 py-3 text-xs font-medium uppercase tracking-widest transition-colors ${
+                  inputTab === 'ai'
+                    ? 'text-[#C17B4E] border-b-2 border-[#C17B4E] -mb-px'
+                    : 'text-[#8C8070] hover:text-[#2C2416]'
+                }`}
+              >
+                ✨ Paste & extract
+              </button>
+              <button
+                onClick={() => setInputTab('manual')}
+                className={`flex-1 py-3 text-xs font-medium uppercase tracking-widest transition-colors ${
+                  inputTab === 'manual'
+                    ? 'text-[#C17B4E] border-b-2 border-[#C17B4E] -mb-px'
+                    : 'text-[#8C8070] hover:text-[#2C2416]'
+                }`}
+              >
+                🔍 Search a place
+              </button>
             </div>
-          )}
-
-          {/* Manual tab */}
-          {inputTab === 'manual' && (
-            <div className="p-5">
-              <p className="text-xs text-[#8C8070] mb-3">Search any place — it gets added to your list and fed into the itinerary generator.</p>
-              {destination.trim() ? (
-                <PlaceSearch
-                  tripId={tripId || ''}
-                  destination={destination}
-                  onSaved={place => setPlaces(prev => [...prev, place])}
-                  onBeforeSave={ensureTripCreated}
+            {inputTab === 'ai' && (
+              <div className="p-5">
+                <p className="text-xs text-[#8C8070] mb-3">Paste links, restaurant names, or notes — AI extracts the places for you.</p>
+                <textarea
+                  className="w-full bg-transparent outline-none text-[#2C2416] text-sm leading-relaxed resize-none placeholder:text-[#8C8070]"
+                  rows={5}
+                  placeholder={"Example:\n- Scripps Pier for photos\n- Brunch in La Jolla\n- https://sandiego.eater.com/..."}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
                 />
-              ) : (
-                <p className="text-xs text-[#C8BFB0]">Enter a destination above first</p>
-              )}
-            </div>
-          )}
-        </div>}
+                {/* Image upload */}
+                <ImageUpload onExtracted={text => setInput(prev => prev ? `${prev}\n${text}` : text)} />
+              </div>
+            )}
+            {inputTab === 'manual' && (
+              <div className="p-5">
+                <p className="text-xs text-[#8C8070] mb-3">Search any place — it gets added to your list and fed into the itinerary generator.</p>
+                {destination.trim() ? (
+                  <PlaceSearch
+                    tripId={tripId || ''}
+                    destination={destination}
+                    onSaved={place => setPlaces(prev => [...prev, place])}
+                    onBeforeSave={ensureTripCreated}
+                  />
+                ) : (
+                  <p className="text-xs text-[#C8BFB0]">Enter a destination above first</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
-        <button
-          onClick={handleExtract}
-          disabled={loading || (!input.trim() && places.length === 0) || !destination.trim()}
-          className="w-full py-4 bg-[#C17B4E] text-white rounded-xl font-medium text-sm hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary →' : 'Extract & generate →'}
-        </button>
+        {/* AI mode extract button */}
+        {mounted && buildMode === 'ai' && (
+          <button
+            onClick={handleExtract}
+            disabled={loading || (!input.trim() && places.length === 0) || !destination.trim()}
+            className="w-full py-4 bg-[#C17B4E] text-white rounded-xl font-medium text-sm hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary →' : 'Extract & generate →'}
+          </button>
+        )}
+
+        {/* Build your own mode — inline itinerary editor */}
+        {mounted && buildMode === 'build' && destination.trim() && editableDays.length > 0 && (
+          <div className="mt-2">
+            <ItineraryEditor
+              days={editableDays}
+              onChange={days => {
+                setEditableDays(days)
+                if (tripId) saveItinerary(days, tripId)
+              }}
+              startDate={startDate}
+              destination={destination}
+            />
+            <button
+              onClick={async () => {
+                const id = await ensureTripCreated()
+                if (!id) return
+                setSaved(true)
+                setItinerary({ days: editableDays })
+                await supabase.from('trips').update({ itinerary: { days: editableDays } }).eq('id', id)
+                window.history.replaceState({}, '', `?trip=${id}`)
+              }}
+              disabled={!destination.trim() || editableDays.every(d => d.stops.length === 0)}
+              className="w-full mt-4 py-4 bg-[#2C2416] text-white rounded-xl font-medium text-sm hover:bg-[#5C5040] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Save itinerary →
+            </button>
+          </div>
+        )}
+        {mounted && buildMode === 'build' && !destination.trim() && (
+          <p className="text-xs text-[#C8BFB0] text-center py-4">Enter a destination above to start building</p>
+        )}
       </div>
 
       {/* Extracted places */}
@@ -670,22 +998,13 @@ export default function Home() {
           </div>
           <div className="bg-white border border-[#E8DFD0] rounded-2xl overflow-hidden mb-6">
             {places.map((place, i) => (
-              <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-[#F5F0E8] last:border-0 group">
-                <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#C17B4E]" />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm text-[#2C2416] font-medium">{place.name}</span>
-                  {place.city && <span className="text-xs text-[#8C8070] ml-2">{place.city}</span>}
-                </div>
-                <span className={`text-xs shrink-0 ${categoryColors[place.category] || 'text-[#8C8070]'}`}>
-                  {place.category}
-                </span>
-                <button
-                  onClick={() => setPlaces(prev => prev.filter((_, j) => j !== i))}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 text-lg leading-none shrink-0"
-                >
-                  ×
-                </button>
-              </div>
+              <PlaceListItem
+                key={i}
+                place={place}
+                destination={destination}
+                categoryColors={categoryColors}
+                onRemove={() => setPlaces(prev => prev.filter((_, j) => j !== i))}
+              />
             ))}
           </div>
 
@@ -711,8 +1030,8 @@ export default function Home() {
       )}
       </>)} {/* end !tripSaved */}
 
-      {/* Manual itinerary builder — shown before generate when no itinerary yet */}
-      {!tripSaved && !itinerary && destination.trim() && editableDays.length > 0 && (
+      {/* Manual itinerary builder — shown before generate when no itinerary yet, AI mode only */}
+      {!tripSaved && !itinerary && buildMode === 'ai' && destination.trim() && editableDays.length > 0 && (
         <div className="w-full max-w-2xl mt-8">
           <p className="text-xs uppercase tracking-widest text-[#8C8070] mb-4">
             Build your itinerary — or generate with AI above
@@ -727,7 +1046,7 @@ export default function Home() {
       )}
 
       {/* Map + Itinerary */}
-      {itinerary?.days && (
+      {(itinerary?.days || (saved && editableDays.some(d => d.stops.length > 0))) && (
         <div className="w-full max-w-2xl mt-10">
           {/* Share toast */}
           {shareToast && (

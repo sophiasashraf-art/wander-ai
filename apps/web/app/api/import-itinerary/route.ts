@@ -229,6 +229,123 @@ Return valid JSON only:
       }
     }
 
+    // If all stops landed on day 1 and other days are empty, the input was an unstructured
+    // list. Redistribute across days using vibe/duration settings.
+    const stopsOnDay1 = daysWithCoords[0]?.stops.length ?? 0
+    const totalStops = daysWithCoords.reduce((a: number, d: any) => a + d.stops.length, 0)
+    const isUnstructured = numDays > 1 && totalStops > 0 && stopsOnDay1 === totalStops
+
+    console.log('isUnstructured:', isUnstructured, 'stopsOnDay1:', stopsOnDay1, 'totalStops:', totalStops, 'numDays:', numDays)
+
+    if (isUnstructured) {
+      const vibeConfig: Record<string, number> = { relaxed: 3, balanced: 4, everything: 6 }
+      let stopsPerDayLimit = 4
+      if (tripId) {
+        const { data: trip } = await supabase.from('trips').select('vibe').eq('id', tripId).single()
+        stopsPerDayLimit = vibeConfig[(trip?.vibe as string) || 'balanced'] || 4
+      }
+
+      // Use enriched places directly (already geocoded, no DB round-trip needed)
+      // Fall back to all stops from day 1 if geocoding failed
+      const geocodableStops = daysWithCoords[0].stops.filter((s: any) => s.lat && s.lng)
+      const pool: any[] = geocodableStops.length > 0 ? geocodableStops : daysWithCoords[0].stops
+
+      // Detect geographic spread
+      const lngs = pool.filter((p: any) => p.lng).map((p: any) => p.lng as number)
+      const lats = pool.filter((p: any) => p.lat).map((p: any) => p.lat as number)
+      const lngSpread = lngs.length > 1 ? Math.max(...lngs) - Math.min(...lngs) : 0
+      const latSpread = lats.length > 1 ? Math.max(...lats) - Math.min(...lats) : 0
+      const isSpread = lngSpread > 0.3 || latSpread > 0.3
+
+      console.log('redistribution: pool size:', pool.length, 'isSpread:', isSpread, 'lngSpread:', lngSpread, 'latSpread:', latSpread)
+
+      const buckets: any[][] = Array.from({ length: numDays }, () => [])
+
+      if (isSpread && pool.length >= numDays) {
+        const sorted = [...pool].sort((a: any, b: any) => (a.lng || 0) - (b.lng || 0))
+        sorted.forEach((p, i) => {
+          const day = Math.min(Math.floor(i * numDays / sorted.length), numDays - 1)
+          if (buckets[day].length < stopsPerDayLimit) buckets[day].push(p)
+        })
+      } else {
+        const CATEGORY_ORDER = ['cafe', 'breakfast', 'activity', 'museum', 'landmark', 'park', 'shopping', 'restaurant', 'bar', 'other']
+        const sorted = [...pool].sort((a: any, b: any) => {
+          const ai = CATEGORY_ORDER.findIndex(c => (a.category || '').toLowerCase().includes(c))
+          const bi = CATEGORY_ORDER.findIndex(c => (b.category || '').toLowerCase().includes(c))
+          return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+        })
+        let dayIdx = 0
+        for (const p of sorted) {
+          let attempts = 0
+          while (buckets[dayIdx].length >= stopsPerDayLimit && attempts < numDays) {
+            dayIdx = (dayIdx + 1) % numDays
+            attempts++
+          }
+          if (attempts < numDays) {
+            buckets[dayIdx].push(p)
+            dayIdx = (dayIdx + 1) % numDays
+          }
+        }
+      }
+
+      const CATEGORY_HOUR: Record<string, number> = {
+        cafe: 9, bakery: 8, breakfast: 8, coffee: 9, brunch: 10,
+        market: 10, park: 10, garden: 10, hike: 9, trail: 9, nature: 10,
+        lunch: 12, food: 12,
+        museum: 14, gallery: 14, shopping: 15, landmark: 14, monument: 14,
+        temple: 14, church: 14, tour: 14,
+        beach: 11, viewpoint: 17, sunset: 18,
+        restaurant: 19, dinner: 19, bar: 20, nightlife: 21, pub: 20, club: 22,
+      }
+      function defaultHour(cat: string): number {
+        const c = (cat || '').toLowerCase()
+        for (const [k, h] of Object.entries(CATEGORY_HOUR)) if (c.includes(k)) return h
+        return 14
+      }
+      function fmtHour(h: number): string {
+        const hh = h % 24
+        return `${hh % 12 || 12}:00 ${hh < 12 ? 'AM' : 'PM'}`
+      }
+      function parseMinLocal(t: string): number {
+        const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+        if (!m) return 0
+        let h = parseInt(m[1]); const min = parseInt(m[2])
+        if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12
+        if (m[3].toUpperCase() === 'AM' && h === 12) h = 0
+        return h * 60 + min
+      }
+
+      const redistributed = buckets.map((bucket, i) => ({
+        day: i + 1,
+        title: `Day ${i + 1}`,
+        stops: bucket
+          .map((s: any) => ({
+            time: s.time || fmtHour(defaultHour(s.category)),
+            name: s.name,
+            category: s.category,
+            note: s.note || '',
+            suggested: false,
+            lat: s.lat,
+            lng: s.lng,
+            opening_hours: s.opening_hours,
+            photo_reference: s.photo_reference,
+            rating: s.rating,
+            price_level: s.price_level,
+            address: s.address,
+          }))
+          .sort((a: any, b: any) => parseMinLocal(a.time) - parseMinLocal(b.time)),
+      }))
+
+      console.log('redistributed:', redistributed.map((d: any) => `Day ${d.day}: ${d.stops.map((s: any) => s.name).join(', ')}`))
+
+      return NextResponse.json({
+        days: redistributed,
+        redistributed: true,
+        startDate: parsed.startDate || null,
+        places: enriched,
+      })
+    }
+
     return NextResponse.json({
       days: daysWithCoords,
       startDate: parsed.startDate || null,

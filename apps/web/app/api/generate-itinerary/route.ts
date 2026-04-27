@@ -4,288 +4,267 @@ import { supabase } from '../../../lib/supabase'
 
 const openai = new OpenAI()
 
+// Category-aware default hour
+const CATEGORY_HOUR: Record<string, number> = {
+  cafe: 9, bakery: 8, breakfast: 8, coffee: 9, brunch: 10,
+  market: 10, park: 10, garden: 10, hike: 9, trail: 9, nature: 10,
+  lunch: 12, food: 12,
+  museum: 14, gallery: 14, shopping: 15, landmark: 14, monument: 14,
+  temple: 14, church: 14, tour: 14,
+  beach: 11, viewpoint: 17, sunset: 18,
+  restaurant: 19, dinner: 19, bar: 20, nightlife: 21, pub: 20, club: 22,
+}
+function defaultHour(cat: string): number {
+  const c = (cat || '').toLowerCase()
+  for (const [k, h] of Object.entries(CATEGORY_HOUR)) if (c.includes(k)) return h
+  return 14
+}
+function fmtHour(h: number): string {
+  const hh = h % 24
+  return `${hh % 12 || 12}:00 ${hh < 12 ? 'AM' : 'PM'}`
+}
+function parseMin(t: string): number {
+  const m = t?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+  if (!m) return 0
+  let h = parseInt(m[1]); const min = parseInt(m[2])
+  if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12
+  if (m[3].toUpperCase() === 'AM' && h === 12) h = 0
+  return h * 60 + min
+}
+
 export async function POST(req: Request) {
   try {
     const { tripId } = await req.json()
 
-    const { data: trip } = await supabase
-      .from('trips')
-      .select('*')
-      .eq('id', tripId)
-      .single()
-
-    const { data: places } = await supabase
-      .from('places')
-      .select('*')
-      .eq('trip_id', tripId)
-
-    console.log('tripId:', tripId)
-    console.log('places count:', places?.length)
+    const { data: trip } = await supabase.from('trips').select('*').eq('id', tripId).single()
+    const { data: places } = await supabase.from('places').select('*').eq('trip_id', tripId)
 
     if (!places || places.length === 0) {
       return NextResponse.json({ error: 'No places found' }, { status: 400 })
     }
 
     const vibeConfig = {
-      relaxed: { stopsPerDay: 3, notes: 'Slow pace, include rest time and long meals.' },
-      balanced: { stopsPerDay: 4, notes: 'Mix of activity and downtime.' },
-      everything: { stopsPerDay: 6, notes: 'Pack in as many places as possible.' },
+      relaxed: { stopsPerDay: 3 },
+      balanced: { stopsPerDay: 4 },
+      everything: { stopsPerDay: 6 },
     }
-
     const config = vibeConfig[(trip?.vibe as keyof typeof vibeConfig) || 'balanced']
     const numDays = parseInt(trip?.duration) || 3
-    const arrivalInfo = ''
-    const departureInfo = ''
 
-    // Build travel context for the prompt
-    let travelContext = ''
-    if (arrivalInfo) travelContext += `\nARRIVAL: The traveler arrives on Day 1 — ${arrivalInfo}. Do NOT schedule anything before their arrival time.`
-    if (departureInfo) travelContext += `\nDEPARTURE: The traveler departs on the last day — ${departureInfo}. Do NOT schedule anything after their departure time. Leave room before departure for getting to the airport/station.`
+    // ── Step 1: Assign places to days IN CODE ──
+    // Use geocoded places if available, fall back to all
+    const geocoded = places.filter((p: any) => p.lat && p.lng)
+    const allPool = geocoded.length > 0 ? geocoded : places
 
-    // ── STEP 1: Group saved places into days by geography ──
-    const step1Response = await openai.chat.completions.create({
+    // Build a coord lookup so we can re-attach lat/lng to stops later
+    const coordLookup: Record<string, { lat: number; lng: number; opening_hours?: string[]; photo_reference?: string; rating?: number; price_level?: number; address?: string }> = {}
+    allPool.forEach((p: any) => {
+      if (p.lat && p.lng) coordLookup[p.name.toLowerCase().trim()] = {
+        lat: p.lat, lng: p.lng,
+        opening_hours: p.opening_hours,
+        photo_reference: p.photo_reference,
+        rating: p.rating,
+        price_level: p.price_level,
+        address: p.address,
+      }
+    })
+
+    const pool = allPool.slice(0, config.stopsPerDay * numDays)
+
+    // Detect geographic spread
+    const geocodedPool = pool.filter((p: any) => p.lat && p.lng)
+    const lngs = geocodedPool.map((p: any) => p.lng)
+    const lats = geocodedPool.map((p: any) => p.lat)
+    const lngSpread = geocodedPool.length > 1 ? Math.max(...lngs) - Math.min(...lngs) : 0
+    const latSpread = geocodedPool.length > 1 ? Math.max(...lats) - Math.min(...lats) : 0
+    const isSpread = lngSpread > 0.3 || latSpread > 0.3
+
+    // Build day buckets
+    const buckets: any[][] = Array.from({ length: numDays }, () => [])
+
+    if (isSpread && geocodedPool.length >= numDays) {
+      // Multi-city / spread: cluster by proximity using a simple greedy nearest-neighbor per day
+      // Sort by lng to get a rough geographic ordering, then assign in blocks
+      const sorted = [...pool].sort((a: any, b: any) => (a.lng || 0) - (b.lng || 0))
+      sorted.forEach((p, i) => {
+        const day = Math.min(Math.floor(i * numDays / sorted.length), numDays - 1)
+        if (buckets[day].length < config.stopsPerDay) buckets[day].push(p)
+      })
+    } else {
+      // Same city: distribute evenly across days, mixing categories
+      // Sort by category so we interleave different types, then round-robin across days
+      const CATEGORY_ORDER = ['cafe', 'breakfast', 'activity', 'museum', 'landmark', 'park', 'shopping', 'restaurant', 'bar', 'other']
+      const sorted = [...pool].sort((a: any, b: any) => {
+        const ai = CATEGORY_ORDER.findIndex(c => (a.category || '').toLowerCase().includes(c))
+        const bi = CATEGORY_ORDER.findIndex(c => (b.category || '').toLowerCase().includes(c))
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+      })
+
+      // Distribute round-robin: place 0→day0, place 1→day1, ..., place N→day(N%numDays)
+      // This guarantees even spread regardless of category distribution
+      let dayIdx = 0
+      for (const p of sorted) {
+        // Find next day that still has room
+        let attempts = 0
+        while (buckets[dayIdx].length >= config.stopsPerDay && attempts < numDays) {
+          dayIdx = (dayIdx + 1) % numDays
+          attempts++
+        }
+        if (attempts < numDays) {
+          buckets[dayIdx].push(p)
+          dayIdx = (dayIdx + 1) % numDays
+        }
+      }
+    }
+
+    console.log('Buckets:', buckets.map((b, i) => `Day ${i+1}: ${b.map((p:any)=>p.name).join(', ')}`))
+
+    // ── Step 2: Ask GPT to add times, titles, notes ONLY ──
+    // Build a prompt where each day's places are clearly listed
+    const dayDescriptions = buckets.map((bucket, i) => {
+      if (bucket.length === 0) return `Day ${i + 1}: (no places assigned — leave stops empty)`
+      return `Day ${i + 1}: ${bucket.map((p: any) => `${p.name} [${p.category}]`).join(', ')}`
+    }).join('\n')
+
+    const gptRes = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{
         role: 'system',
-        content: `You are a travel planner. Your ONLY job is to group the provided places into days based on geographic proximity.
+        content: `You are a travel planner. The places have already been assigned to specific days — you MUST NOT move any place to a different day.
 
-RULES:
-- Create exactly ${numDays} days
-- Group places that are close together (similar lat/lng) on the same day
-- Spread places evenly across days — don't put everything on day 1
-- Use ALL provided places — every single one must appear exactly once
-- Each stop must have "suggested": false
-- Give each day a title based on the area or theme
-- Assign realistic times based on the category of each place:
-  • Cafes, bakeries, breakfast spots → morning only (8:00–10:00 AM) — NEVER schedule these at night
-  • Markets, parks, gardens, hikes → late morning (10:00 AM–12:00 PM)
-  • Lunch spots → midday (12:00–2:00 PM)
-  • Museums, galleries, shopping, landmarks → afternoon (2:00–5:00 PM)
-  • Restaurants (dinner), bars, nightlife, pubs → evening only (6:00–10:00 PM) — NEVER schedule these in the morning
-  • Beaches, viewpoints → flexible but prefer late morning or late afternoon (sunset)
-- Order stops within each day chronologically by their assigned time
-- NEVER schedule two stops of the same category back to back (e.g. no two cafes in a row, no two restaurants in a row). Vary the types of stops throughout the day.
-${travelContext}
+Your only jobs:
+1. Give each day a short title (area or theme)
+2. Assign a realistic time to each place based on category:
+   - cafe/coffee/bakery/breakfast → 8:00–10:00 AM
+   - park/market/hike → 10:00–12:00 PM  
+   - museum/gallery/landmark/shopping → 1:00–5:00 PM
+   - restaurant: if only one → 7:00 PM; if two on same day → one at 12:30 PM (lunch) + one at 7:00 PM (dinner)
+   - bar/pub/nightlife → 9:00 PM
+   - beach/viewpoint → 11:00 AM or 5:30 PM
+3. Write a one-sentence "note" tip for each place
+4. Include ALL days in your response, even empty ones (stops: [])
 
-Return valid JSON only.
-Format: {"days": [{"day": 1, "title": "Area name", "stops": [{"time": "9:00 AM", "name": "exact place name from list", "category": "...", "note": "one sentence tip", "suggested": false}]}]}`,
+Return valid JSON:
+{"days": [{"day": 1, "title": "...", "stops": [{"time": "10:00 AM", "name": "exact name", "category": "...", "note": "...", "suggested": false}]}]}`,
       }, {
         role: 'user',
-        content: `Group these ${places.length} places into exactly ${numDays} days for ${trip?.destination}.
+        content: `Destination: ${trip?.destination}
+Total days: ${numDays}
 
-Use the lat/lng coordinates to group geographically close places together. Here are the places sorted by longitude (west to east) to help you see which are far apart:
+Places assigned to each day (DO NOT change these assignments):
+${dayDescriptions}
 
-${JSON.stringify(places
-  .sort((a: any, b: any) => a.lng - b.lng)
-  .map((p: any) => ({
-    name: p.name,
-    category: p.category,
-    lat: p.lat,
-    lng: p.lng,
-    note: p.description,
-  })), null, 2)}
-
-IMPORTANT: Places with very different coordinates (more than 0.5 degrees apart) are far from each other and should be on different days. For example if one place has lng 45.9 and another has lng 46.6 they are far apart — do not put them on the same day unless there are no other options.`,
+Return all ${numDays} days with times and titles.`,
       }],
       response_format: { type: 'json_object' },
     })
 
-    const step1 = JSON.parse(step1Response.choices[0].message.content || '{"days":[]}')
+    const gptResult = JSON.parse(gptRes.choices[0].message.content || '{"days":[]}')
+    console.log('GPT result:', gptResult.days?.map((d: any) => `Day ${d.day}: ${d.stops?.length} stops`))
 
-    // Remove exact duplicate stops across days
-    const seenPlaces = new Set<string>()
-    step1.days = step1.days.map((day: any) => ({
-      ...day,
-      stops: day.stops.filter((stop: any) => {
-        const key = stop.name.toLowerCase().trim()
-        if (seenPlaces.has(key)) return false
-        seenPlaces.add(key)
-        return true
-      })
-    }))
+    // ── Step 3: Validate GPT output — rebuild any day that got wrong stop count ──
+    const gptByDay: Record<number, any> = {}
+    gptResult.days?.forEach((d: any) => { gptByDay[d.day] = d })
 
-    console.log('Step 1 days:', step1.days.map((d: any) => `Day ${d.day}: ${d.stops.length} stops`))
+    let finalDays = buckets.map((bucket, i) => {
+      const dayNum = i + 1
+      const gptDay = gptByDay[dayNum]
 
-    // ── STEP 2: Fill thin days with suggestions ──
-    const thinDays = step1.days.filter((d: any) => d.stops.length < 2)
+      // Accept GPT's version if it has the right stops (by name match)
+      if (gptDay?.stops) {
+        const gptNames = new Set(gptDay.stops.map((s: any) => s.name.toLowerCase().trim()))
+        const bucketNames = bucket.map((p: any) => p.name.toLowerCase().trim())
+        const allPresent = bucketNames.every(n => gptNames.has(n))
+        if (allPresent) return gptDay
+      }
 
+      // GPT moved stops around — rebuild this day with default times
+      const stops = bucket.map((p: any) => ({
+        time: fmtHour(defaultHour(p.category)),
+        name: p.name,
+        category: p.category,
+        note: '',
+        suggested: false,
+        lat: p.lat,
+        lng: p.lng,
+        opening_hours: p.opening_hours,
+        photo_reference: p.photo_reference,
+        rating: p.rating,
+        price_level: p.price_level,
+        address: p.address,
+      }))
+      stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
+      return { day: dayNum, title: gptDay?.title || `Day ${dayNum}`, stops }
+    })
+
+    // ── Step 4: Fill thin days with suggestions ──
+    const thinDays = finalDays.filter((d: any) => d.stops.length < 2)
     if (thinDays.length > 0) {
-      const step2Response = await openai.chat.completions.create({
+      const step2Res = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
-          content: `You are a travel planner. Fill in thin days with realistic suggested places.
-- Only suggest real, well-known places in the destination
-- Mark every suggested stop with "suggested": true
-- Match the geographic area/theme of the day
-- Suggest ${config.stopsPerDay} total stops per day
-- Return only the days that need filling`,
+          content: `Fill thin days with real, well-known suggested places in the destination. Mark each with "suggested": true. Aim for ${config.stopsPerDay} stops per day. Return only the days that need filling.`,
         }, {
           role: 'user',
-          content: `These days in ${trip?.destination} need more stops. Add suggestions to reach ${config.stopsPerDay} stops per day.
+          content: `Destination: ${trip?.destination}. Add suggestions to reach ${config.stopsPerDay} stops/day.
 
 Days needing suggestions:
 ${JSON.stringify(thinDays, null, 2)}
 
-Full itinerary context (don't repeat these places):
-${JSON.stringify(step1.days.flatMap((d: any) => d.stops.map((s: any) => s.name)), null, 2)}
+Already scheduled (don't repeat):
+${JSON.stringify(finalDays.flatMap((d: any) => d.stops.map((s: any) => s.name)), null, 2)}
 
-Return JSON: {"days": [{"day": 1, "title": "...", "stops": [...existing stops with suggested:false..., ...new stops with suggested:true...]}]}`,
+Return JSON: {"days": [...]}`,
         }],
         response_format: { type: 'json_object' },
       })
 
-      const step2 = JSON.parse(step2Response.choices[0].message.content || '{"days":[]}')
-
-      // Merge step2 days back into step1
-      step2.days?.forEach((filledDay: any) => {
-        const idx = step1.days.findIndex((d: any) => d.day === filledDay.day)
-        if (idx !== -1) {
-          step1.days[idx] = filledDay
-        }
+      const step2 = JSON.parse(step2Res.choices[0].message.content || '{"days":[]}')
+      step2.days?.forEach((filled: any) => {
+        const idx = finalDays.findIndex((d: any) => d.day === filled.day)
+        if (idx !== -1) finalDays[idx] = filled
       })
     }
 
-    // Add times to stops that don't have them, using category-aware defaults
-    const categoryTimeDefaults: Record<string, number> = {
-      // Morning only
-      cafe: 9, bakery: 8, breakfast: 8, coffee: 9, brunch: 10,
-      // Late morning
-      market: 10, park: 10, garden: 10, hike: 9, trail: 9, nature: 10,
-      // Midday
-      lunch: 12, food: 12,
-      // Afternoon
-      museum: 14, gallery: 14, shopping: 15, landmark: 14, monument: 14,
-      temple: 14, church: 14, tour: 14,
-      // Flexible
-      beach: 11, viewpoint: 17, sunset: 18,
-      // Evening only
-      restaurant: 19, dinner: 19, bar: 20, nightlife: 21, pub: 20, club: 22,
-    }
-    function getDefaultHour(category: string): number {
-      const cat = (category || '').toLowerCase()
-      for (const [key, hour] of Object.entries(categoryTimeDefaults)) {
-        if (cat.includes(key)) return hour
-      }
-      return 12
-    }
-    function formatHourFallback(hour: number): string {
-      const h = hour % 24
-      const period = h < 12 ? 'AM' : 'PM'
-      const display = h % 12 || 12
-      return `${display}:00 ${period}`
-    }
-    step1.days = step1.days.map((day: any) => {
-      const stops = day.stops.map((stop: any) => ({
-        ...stop,
-        time: stop.time || formatHourFallback(getDefaultHour(stop.category)),
-      }))
-      // Sort by time so the day reads chronologically
-      stops.sort((a: any, b: any) => {
-        const parse = (t: string) => {
-          const m = t.match(/(\d+):(\d+)\s*(AM|PM)/i)
-          if (!m) return 0
-          let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
-          if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
-          return h * 60 + min
+    // ── Step 5: Sort stops chronologically, nudge same-category apart, re-attach coords ──
+    finalDays = finalDays.map((day: any) => {
+      const stops = day.stops.map((s: any) => {
+        const coords = coordLookup[s.name.toLowerCase().trim()]
+        return {
+          ...s,
+          time: s.time || fmtHour(defaultHour(s.category)),
+          // Re-attach coordinates and place details from DB (GPT strips these)
+          ...(coords ? {
+            lat: coords.lat,
+            lng: coords.lng,
+            opening_hours: coords.opening_hours,
+            photo_reference: coords.photo_reference,
+            rating: coords.rating,
+            price_level: coords.price_level,
+            address: coords.address,
+          } : {}),
         }
-        return parse(a.time) - parse(b.time)
       })
+      stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
 
-      // Nudge consecutive same-category stops apart by 90 min
       for (let i = 1; i < stops.length; i++) {
-        const prev = stops[i - 1]
-        const curr = stops[i]
-        if (prev.category && curr.category && prev.category === curr.category) {
-          const parseMin = (t: string) => {
-            const m = t.match(/(\d+):(\d+)\s*(AM|PM)/i)
-            if (!m) return 0
-            let h = parseInt(m[1]); const min = parseInt(m[2]); const p = m[3].toUpperCase()
-            if (p === 'PM' && h !== 12) h += 12; if (p === 'AM' && h === 12) h = 0
-            return h * 60 + min
-          }
-          const fmtMin = (total: number) => {
-            const h = Math.floor(total / 60) % 24
-            const min = total % 60
-            const period = h < 12 ? 'AM' : 'PM'
-            const display = h % 12 || 12
-            return `${display}:${String(min).padStart(2, '0')} ${period}`
-          }
-          const prevMin = parseMin(prev.time)
-          const currMin = parseMin(curr.time)
-          if (currMin <= prevMin + 30) {
-            stops[i] = { ...curr, time: fmtMin(prevMin + 90) }
+        if (stops[i].category === stops[i-1].category) {
+          const prev = parseMin(stops[i-1].time)
+          const curr = parseMin(stops[i].time)
+          if (curr <= prev + 30) {
+            const newMin = prev + 90
+            const h = Math.floor(newMin / 60) % 24
+            const m = newMin % 60
+            stops[i] = { ...stops[i], time: `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h < 12 ? 'AM' : 'PM'}` }
           }
         }
       }
       return { ...day, stops }
     })
 
-    // ── Parse travel info into clean stops using GPT ──
-    async function parseTravelInfo(info: string, type: 'arrival' | 'departure', dest: string): Promise<{ time: string; name: string; note: string }> {
-      const res = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [{
-          role: 'system',
-          content: `You parse travel details from user input. Return valid JSON with: time, name, note.
-
-Example input: "DL0711 4/19/2026 atl-las landing at 6:27pm"
-Example output: {"time": "6:27 PM", "name": "✈ Delta DL0711 · ATL → LAS", "note": "Lands at Harry Reid International Airport (LAS) · April 19, 2026"}
-
-Example input: "driving in around 10am"
-Example output: {"time": "10:00 AM", "name": "🚗 Arrive by car", "note": ""}
-
-Example input: "AA 2381 departing 3pm"
-Example output: {"time": "3:00 PM", "name": "✈ American AA2381", "note": ""}
-
-Known airline codes: DL=Delta, AA=American, UA=United, WN=Southwest, B6=JetBlue, NK=Spirit, F9=Frontier, AS=Alaska.
-Know your airport codes — ATL=Hartsfield-Jackson Atlanta, LAS=Harry Reid Las Vegas, LAX=Los Angeles, JFK=John F. Kennedy New York, ORD=O'Hare Chicago, etc.
-The trip destination is ${dest}. Use this to fill in airport names when you recognize the codes.
-Always replace airport codes with the actual route using → arrow.
-Format times as H:MM AM/PM. If no time given, use "TBD".`,
-        }, {
-          role: 'user',
-          content: `Parse this ${type} info: ${info}`,
-        }],
-        response_format: { type: 'json_object' },
-      })
-      try {
-        const parsed = JSON.parse(res.choices[0].message.content || '{}')
-        if (!parsed.time || parsed.time === 'N/A' || parsed.time === 'TBD') {
-          parsed.time = parseTimeFromText(info) || 'TBD'
-        }
-        return parsed
-      } catch {
-        const time = parseTimeFromText(info) || 'TBD'
-        return { time, name: `${type === 'arrival' ? '✈ Arrive' : '✈ Depart'} — ${info}`, note: '' }
-      }
-    }
-
-    if (arrivalInfo && step1.days?.length > 0) {
-      const parsed = await parseTravelInfo(arrivalInfo, 'arrival', trip?.destination || '')
-      step1.days[0].stops.unshift({
-        time: parsed.time,
-        name: parsed.name,
-        category: 'travel',
-        note: parsed.note,
-        suggested: false,
-      })
-    }
-
-    if (departureInfo && step1.days?.length > 0) {
-      const parsed = await parseTravelInfo(departureInfo, 'departure', trip?.destination || '')
-      const lastDay = step1.days[step1.days.length - 1]
-      lastDay.stops.push({
-        time: parsed.time,
-        name: parsed.name,
-        category: 'travel',
-        note: parsed.note,
-        suggested: false,
-      })
-    }
-
-    console.log('Final days:', step1.days.map((d: any) => `Day ${d.day}: ${d.stops.length} stops`))
-    return NextResponse.json(step1)
+    console.log('Final:', finalDays.map((d: any) => `Day ${d.day}: ${d.stops.length} stops`))
+    return NextResponse.json({ days: finalDays })
 
   } catch (e: any) {
     console.error('ERROR:', e)
