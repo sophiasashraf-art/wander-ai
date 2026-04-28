@@ -19,6 +19,58 @@ function defaultHour(cat: string): number {
   for (const [k, h] of Object.entries(CATEGORY_HOUR)) if (c.includes(k)) return h
   return 14
 }
+
+// Hard time windows: [earliest, latest] in 24h minutes
+// If GPT assigns a time outside this window, clamp it to the default
+const CATEGORY_WINDOW: Record<string, [number, number]> = {
+  cafe:       [7*60,  11*60],  // 7am–11am
+  coffee:     [7*60,  11*60],
+  bakery:     [7*60,  11*60],
+  breakfast:  [7*60,  11*60],
+  brunch:     [9*60,  13*60],
+  market:     [8*60,  14*60],
+  park:       [8*60,  18*60],
+  garden:     [8*60,  18*60],
+  hike:       [7*60,  14*60],
+  trail:      [7*60,  14*60],
+  nature:     [8*60,  17*60],
+  lunch:      [11*60, 14*60],
+  museum:     [9*60,  18*60],
+  gallery:    [10*60, 19*60],
+  shopping:   [10*60, 20*60],
+  landmark:   [8*60,  19*60],
+  monument:   [8*60,  19*60],
+  temple:     [8*60,  18*60],
+  church:     [8*60,  18*60],
+  tour:       [9*60,  17*60],
+  beach:      [8*60,  19*60],
+  viewpoint:  [8*60,  21*60],
+  sunset:     [16*60, 21*60],
+  restaurant: [11*60, 22*60],
+  dinner:     [17*60, 22*60],
+  bar:        [17*60, 24*60],
+  pub:        [17*60, 24*60],
+  nightlife:  [20*60, 28*60],
+  club:       [21*60, 28*60],
+}
+
+function clampToWindow(timeStr: string, category: string): string {
+  const c = (category || '').toLowerCase()
+  let window: [number, number] | null = null
+  for (const [k, w] of Object.entries(CATEGORY_WINDOW)) {
+    if (c.includes(k)) { window = w; break }
+  }
+  if (!window) return timeStr
+
+  const mins = parseMin(timeStr)
+  if (mins === 0) return timeStr // unparseable, leave it
+
+  const [earliest, latest] = window
+  if (mins >= earliest && mins <= latest) return timeStr
+
+  // Outside window — use the default hour for this category
+  return fmtHour(defaultHour(category))
+}
 function fmtHour(h: number): string {
   const hh = h % 24
   return `${hh % 12 || 12}:00 ${hh < 12 ? 'AM' : 'PM'}`
@@ -34,7 +86,7 @@ function parseMin(t: string): number {
 
 export async function POST(req: Request) {
   try {
-    const { tripId } = await req.json()
+    const { tripId, arrivalTime, departureTime } = await req.json()
 
     const { data: trip } = await supabase.from('trips').select('*').eq('id', tripId).single()
     const { data: places } = await supabase.from('places').select('*').eq('trip_id', tripId)
@@ -134,13 +186,20 @@ export async function POST(req: Request) {
 
 Your only jobs:
 1. Give each day a short title (area or theme)
-2. Assign a realistic time to each place based on category:
-   - cafe/coffee/bakery/breakfast → 8:00–10:00 AM
-   - park/market/hike → 10:00–12:00 PM  
-   - museum/gallery/landmark/shopping → 1:00–5:00 PM
-   - restaurant: if only one → 7:00 PM; if two on same day → one at 12:30 PM (lunch) + one at 7:00 PM (dinner)
-   - bar/pub/nightlife → 9:00 PM
-   - beach/viewpoint → 11:00 AM or 5:30 PM
+2. Assign a realistic time to each place. Follow these rules STRICTLY — do not deviate:
+   - cafe / coffee / bakery / breakfast → 8:00 AM – 10:00 AM ONLY. Never in the afternoon or evening.
+   - brunch → 10:00 AM – 12:00 PM
+   - park / market / hike / trail / nature → 9:00 AM – 12:00 PM
+   - museum / gallery / landmark / monument / temple / church → 10:00 AM – 5:00 PM
+   - shopping → 11:00 AM – 6:00 PM
+   - tour → 10:00 AM – 4:00 PM
+   - beach → 10:00 AM – 6:00 PM
+   - viewpoint → 10:00 AM or 5:30 PM
+   - sunset → 5:30 PM – 7:30 PM
+   - lunch / food (if category is lunch) → 12:00 PM – 1:30 PM
+   - restaurant (dinner) → 7:00 PM. If two restaurants on same day: one at 12:30 PM (lunch) + one at 7:00 PM (dinner)
+   - bar / pub → 8:00 PM – 10:00 PM
+   - nightlife / club → 10:00 PM or later${arrivalTime ? `\n   - Day 1 constraint: traveler arrives at ${arrivalTime} — do NOT schedule anything before this time on Day 1` : ''}${departureTime ? `\n   - Day ${numDays} constraint: traveler departs at ${departureTime} — do NOT schedule anything at or after this time on Day ${numDays}` : ''}
 3. Write a one-sentence "note" tip for each place
 4. Include ALL days in your response, even empty ones (stops: [])
 
@@ -231,9 +290,11 @@ Return JSON: {"days": [...]}`,
     finalDays = finalDays.map((day: any) => {
       const stops = day.stops.map((s: any) => {
         const coords = coordLookup[s.name.toLowerCase().trim()]
+        const rawTime = s.time || fmtHour(defaultHour(s.category))
+        const clampedTime = clampToWindow(rawTime, s.category)
         return {
           ...s,
-          time: s.time || fmtHour(defaultHour(s.category)),
+          time: clampedTime,
           // Re-attach coordinates and place details from DB (GPT strips these)
           ...(coords ? {
             lat: coords.lat,
@@ -263,7 +324,58 @@ Return JSON: {"days": [...]}`,
       return { ...day, stops }
     })
 
+    // ── Step 5.5: Remove stops that violate arrival/departure constraints ──
+    if (arrivalTime || departureTime) {
+      const toMins = (t: string) => {
+        const [h, m] = t.split(':').map(Number)
+        return h * 60 + (m || 0)
+      }
+      const arrivalMins = arrivalTime ? toMins(arrivalTime) : 0
+      const departureMins = departureTime ? toMins(departureTime) : 24 * 60
+
+      finalDays = finalDays.map((day: any, i: number) => {
+        const isFirstDay = i === 0
+        const isLastDay = i === finalDays.length - 1
+        if (!isFirstDay && !isLastDay) return day
+        const stops = day.stops.filter((s: any) => {
+          const mins = parseMin(s.time)
+          if (isFirstDay && arrivalTime && mins < arrivalMins) return false
+          if (isLastDay && departureTime && mins >= departureMins) return false
+          return true
+        })
+        return { ...day, stops }
+      })
+    }
+
     console.log('Final:', finalDays.map((d: any) => `Day ${d.day}: ${d.stops.length} stops`))
+
+    // ── Step 6: Fill any missing notes in one batch ──
+    const stopsNeedingNotes = finalDays.flatMap((d: any) =>
+      d.stops.filter((s: any) => !s.note?.trim()).map((s: any) => ({ name: s.name, category: s.category }))
+    )
+    if (stopsNeedingNotes.length > 0) {
+      const noteRes = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'system',
+          content: `Write a short, specific one-sentence tip for each place — what to do, order, see, or experience there. Be concrete and useful, not generic. Return JSON: {"notes": {"place name": "tip..."}}`,
+        }, {
+          role: 'user',
+          content: `Destination: ${trip?.destination}\n\nPlaces needing tips:\n${stopsNeedingNotes.map((s: any) => `- ${s.name} [${s.category}]`).join('\n')}`,
+        }],
+        response_format: { type: 'json_object' },
+      })
+      const noteResult = JSON.parse(noteRes.choices[0].message.content || '{"notes":{}}')
+      const notes: Record<string, string> = noteResult.notes || {}
+      finalDays = finalDays.map((day: any) => ({
+        ...day,
+        stops: day.stops.map((s: any) => ({
+          ...s,
+          note: s.note?.trim() || notes[s.name] || notes[s.name.toLowerCase()] || '',
+        })),
+      }))
+    }
+
     return NextResponse.json({ days: finalDays })
 
   } catch (e: any) {

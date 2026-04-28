@@ -297,6 +297,37 @@ Return valid JSON only:
         beach: 11, viewpoint: 17, sunset: 18,
         restaurant: 19, dinner: 19, bar: 20, nightlife: 21, pub: 20, club: 22,
       }
+      const CATEGORY_WINDOW: Record<string, [number, number]> = {
+        cafe:       [7*60,  11*60],
+        coffee:     [7*60,  11*60],
+        bakery:     [7*60,  11*60],
+        breakfast:  [7*60,  11*60],
+        brunch:     [9*60,  13*60],
+        market:     [8*60,  14*60],
+        park:       [8*60,  18*60],
+        garden:     [8*60,  18*60],
+        hike:       [7*60,  14*60],
+        trail:      [7*60,  14*60],
+        nature:     [8*60,  17*60],
+        lunch:      [11*60, 14*60],
+        museum:     [9*60,  18*60],
+        gallery:    [10*60, 19*60],
+        shopping:   [10*60, 20*60],
+        landmark:   [8*60,  19*60],
+        monument:   [8*60,  19*60],
+        temple:     [8*60,  18*60],
+        church:     [8*60,  18*60],
+        tour:       [9*60,  17*60],
+        beach:      [8*60,  19*60],
+        viewpoint:  [8*60,  21*60],
+        sunset:     [16*60, 21*60],
+        restaurant: [11*60, 22*60],
+        dinner:     [17*60, 22*60],
+        bar:        [17*60, 24*60],
+        pub:        [17*60, 24*60],
+        nightlife:  [20*60, 28*60],
+        club:       [21*60, 28*60],
+      }
       function defaultHour(cat: string): number {
         const c = (cat || '').toLowerCase()
         for (const [k, h] of Object.entries(CATEGORY_HOUR)) if (c.includes(k)) return h
@@ -314,13 +345,26 @@ Return valid JSON only:
         if (m[3].toUpperCase() === 'AM' && h === 12) h = 0
         return h * 60 + min
       }
+      function clampTime(timeStr: string, category: string): string {
+        const c = (category || '').toLowerCase()
+        let window: [number, number] | null = null
+        for (const [k, w] of Object.entries(CATEGORY_WINDOW)) {
+          if (c.includes(k)) { window = w; break }
+        }
+        if (!window) return timeStr
+        const mins = parseMinLocal(timeStr)
+        if (mins === 0) return timeStr
+        const [earliest, latest] = window
+        if (mins >= earliest && mins <= latest) return timeStr
+        return fmtHour(defaultHour(category))
+      }
 
       const redistributed = buckets.map((bucket, i) => ({
         day: i + 1,
         title: `Day ${i + 1}`,
         stops: bucket
           .map((s: any) => ({
-            time: s.time || fmtHour(defaultHour(s.category)),
+            time: clampTime(s.time || fmtHour(defaultHour(s.category)), s.category),
             name: s.name,
             category: s.category,
             note: s.note || '',

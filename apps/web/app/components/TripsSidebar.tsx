@@ -79,7 +79,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#E8DFD0]">
           <span className="font-serif text-lg text-[#2C2416]">
-            wander<span className="text-[#C17B4E]">.</span>ai
+            mapture<span className="text-[#C17B4E]">.</span>
           </span>
           <button
             onClick={onClose}

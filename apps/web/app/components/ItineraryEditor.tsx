@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners } from '@dnd-kit/core'
+import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
@@ -97,22 +97,20 @@ function GripIcon() {
   )
 }
 
-function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, viewOnly = false, destination = '' }: {
+function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameChange, viewOnly = false, destination = '' }: {
   stop: Stop; dayColor: string; onDelete: () => void
   onTimeChange: (time: string) => void; onNoteChange: (note: string) => void
+  onNameChange: (name: string) => void
   viewOnly?: boolean; destination?: string
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: stop.id })
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState(false)
   const [editingNote, setEditingNote] = useState(false)
-  const [showHours, setShowHours] = useState(false)
+  const [editingName, setEditingName] = useState(false)
   const [showPopup, setShowPopup] = useState(false)
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }
-
-  const hoursLine = stop.opening_hours ? getTodayHours(stop.opening_hours) : null
-  const outsideHours = stop.opening_hours && stop.time ? isOutsideHours(stop.time, stop.opening_hours) : false
 
   return (
     <div ref={setNodeRef} style={style} className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white">
@@ -149,17 +147,44 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, viewOnl
             </button>
           )}
           <div className="relative flex-1 min-w-0">
-            <button
-              onClick={e => {
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                setAnchorRect(rect)
-                setShowPopup(p => !p)
-              }}
-              className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full"
-              title="View place details"
-            >
-              {stop.name}
-            </button>
+            {editingName ? (
+              <input
+                autoFocus
+                type="text"
+                defaultValue={stop.name}
+                onBlur={e => {
+                  setEditingName(false)
+                  const val = e.target.value.trim()
+                  if (val && val !== stop.name) onNameChange(val)
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                  if (e.key === 'Escape') setEditingName(false)
+                }}
+                className="text-sm font-medium text-[#2C2416] w-full border-b border-[#C17B4E] outline-none bg-transparent pb-0.5"
+              />
+            ) : stop.lat && stop.lng ? (
+              <button
+                onClick={e => {
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                  setAnchorRect(rect)
+                  setShowPopup(p => !p)
+                }}
+                onDoubleClick={() => { if (!viewOnly) setEditingName(true) }}
+                className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full"
+                title={!viewOnly ? 'Click for details · Double-click to edit name' : 'View place details'}
+              >
+                {stop.name}
+              </button>
+            ) : (
+              <p
+                onDoubleClick={() => { if (!viewOnly) setEditingName(true) }}
+                className={`text-sm font-medium text-[#2C2416] truncate ${!viewOnly ? 'cursor-text' : ''}`}
+                title={!viewOnly ? 'Double-click to edit name' : undefined}
+              >
+                {stop.name}
+              </p>
+            )}
             {showPopup && anchorRect && (
               <PlacePopup
                 stop={stop}
@@ -170,19 +195,9 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, viewOnl
             )}
           </div>
           {stop.suggested && <span className="text-xs px-2 py-0.5 rounded-full bg-[#F5F0E8] text-[#8C8070] shrink-0">suggested</span>}
-          {outsideHours && (
+          {stop.opening_hours && (
             <button
-              onClick={() => setShowHours(h => !h)}
-              className="shrink-0 text-amber-500 hover:text-amber-600 transition-colors"
-              title="May be closed at this time"
-              aria-label="Hours warning"
-            >
-              ⚠️
-            </button>
-          )}
-          {!outsideHours && hoursLine && (
-            <button
-              onClick={() => setShowHours(h => !h)}
+              onClick={() => setShowPopup(p => !p)}
               className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-[#8C8070] text-xs"
               title="Show opening hours"
             >
@@ -190,12 +205,6 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, viewOnl
             </button>
           )}
         </div>
-        {showHours && hoursLine && (
-          <p className="text-xs text-[#8C8070] mt-0.5 pl-16">
-            {outsideHours ? <span className="text-amber-500 font-medium">May be closed · </span> : null}
-            {formatHoursShort(hoursLine)}
-          </p>
-        )}
         {editingNote ? (
           <input autoFocus type="text" defaultValue={stop.note}
             onBlur={e => { setEditingNote(false); onNoteChange(e.target.value) }}
@@ -254,8 +263,11 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
     setFetchLoading(true)
     fetch(`/api/place-search?name=${encodeURIComponent(stop.name)}&location=${encodeURIComponent(destination)}`)
       .then(r => r.json())
-      .then(data => { if (data.result) setFetched(data.result) })
-      .catch(() => {})
+      .then(data => {
+        if (data.result) setFetched(data.result)
+        else console.warn('place-search returned no result for:', stop.name, data.error || '')
+      })
+      .catch(err => console.warn('place-search fetch error:', err))
       .finally(() => setFetchLoading(false))
   }, [stop.name, destination, stop.photo_reference])
 
@@ -346,7 +358,10 @@ function DragOverlayCard({ stop, dayColor }: { stop: Stop; dayColor: string }) {
     </div>
   )
 }
-function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: string, time?: string) => void; destination: string }) {
+function AddStopInput({ onAdd, destination }: {
+  onAdd: (name: string, note?: string, time?: string, lat?: number, lng?: number) => void
+  destination: string
+}) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<any[]>([])
@@ -390,8 +405,20 @@ function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: str
     setShowSuggestions(false)
     const name = prediction.structured_formatting?.main_text || prediction.description
     const note = prediction.structured_formatting?.secondary_text || ''
+    const token = sessionToken.current
     sessionToken.current = crypto.randomUUID()
-    onAdd(name, note)
+
+    // Fetch coordinates for the selected place
+    let lat: number | undefined
+    let lng: number | undefined
+    try {
+      const res = await fetch(`/api/places-details?placeId=${prediction.place_id}&session=${token}`)
+      const data = await res.json()
+      lat = data.result?.geometry?.location?.lat
+      lng = data.result?.geometry?.location?.lng
+    } catch {}
+
+    onAdd(name, note, undefined, lat, lng)
     setQuery('')
     setOpen(false)
   }
@@ -448,6 +475,46 @@ function AddStopInput({ onAdd, destination }: { onAdd: (name: string, note?: str
   )
 }
 
+function DroppableDay({ id, children }: { id: string; children: React.ReactNode }) {
+  const { setNodeRef } = useDroppable({ id })
+  return <div ref={setNodeRef} className="min-h-[2rem]">{children}</div>
+}
+
+function DayTitle({ title, dayIndex, viewOnly, onChange }: {
+  title: string; dayIndex: number; viewOnly: boolean; onChange: (t: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(title)
+  function commit() {
+    setEditing(false)
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== title) onChange(trimmed)
+    else setDraft(title)
+  }
+  if (editing) {
+    return (
+      <input autoFocus type="text" value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') commit()
+          if (e.key === 'Escape') { setDraft(title); setEditing(false) }
+        }}
+        className="text-sm font-medium text-[#2C2416] bg-transparent border-b border-[#C17B4E] outline-none pb-0.5 w-40"
+      />
+    )
+  }
+  return (
+    <span
+      onDoubleClick={() => { if (!viewOnly) { setDraft(title); setEditing(true) } }}
+      className={`text-sm font-medium text-[#2C2416] ${!viewOnly ? 'cursor-text select-none' : ''}`}
+      title={!viewOnly ? 'Double-click to edit' : undefined}
+    >
+      {title}
+    </span>
+  )
+}
+
 export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '' }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
@@ -458,6 +525,10 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
 
   function findDayIndexByStopId(stopId: string): number {
     return days.findIndex(d => d.stops.some(s => s.id === stopId))
+  }
+
+  function updateDayTitle(dayIndex: number, title: string) {
+    onChange(days.map((d, i) => i === dayIndex ? { ...d, title } : d))
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -478,7 +549,9 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     const newDays = days.map(d => ({ ...d, stops: [...d.stops] }))
     const stop = newDays[activeDayIdx].stops.find(s => s.id === activeId)!
     newDays[activeDayIdx].stops = newDays[activeDayIdx].stops.filter(s => s.id !== activeId)
-    newDays[overDayIdx].stops.push(stop)
+    // When moving to a new day, keep the stop's time but clear manualTime so recalcTimes
+    // can assign a sensible default if the time is a category default
+    newDays[overDayIdx].stops.push({ ...stop, manualTime: !!stop.manualTime })
     update(newDays)
   }
 
@@ -494,13 +567,34 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     const oldIndex = stops.findIndex(s => s.id === activeId)
     const newIndex = stops.findIndex(s => s.id === overId)
     if (oldIndex === -1 || newIndex === -1) return
-    update(days.map((d, i) => i === dayIdx ? { ...d, stops: arrayMove(d.stops, oldIndex, newIndex) } : d))
+
+    // Reorder the stops array to match the drag result
+    const reordered = arrayMove(stops, oldIndex, newIndex)
+
+    // Redistribute times to match the new visual order:
+    // collect all times sorted ascending, then assign them in position order
+    const sortedTimes = [...reordered]
+      .map(s => parseTime(s.time))
+      .filter(t => t > 0)
+      .sort((a, b) => a - b)
+
+    const reassigned = reordered.map((s, i) => {
+      const mins = sortedTimes[i]
+      if (mins == null) return s
+      const h = Math.floor(mins / 60)
+      const m = mins % 60
+      const period = h < 12 ? 'AM' : 'PM'
+      const display = h % 12 || 12
+      return { ...s, time: `${display}:${String(m).padStart(2, '0')} ${period}`, manualTime: true }
+    })
+
+    onChange(days.map((d, i) => i === dayIdx ? { ...d, stops: reassigned } : d))
   }
 
   function updateStopTime(dayIndex: number, stopId: string, time: string) {
     const newDays = days.map((d, i) => {
       if (i !== dayIndex) return d
-      const updated = d.stops.map(s => s.id === stopId ? { ...s, time } : s)
+      const updated = d.stops.map(s => s.id === stopId ? { ...s, time, manualTime: true } : s)
       return { ...d, stops: [...updated].sort((a, b) => parseTime(a.time) - parseTime(b.time)) }
     })
     onChange(newDays)
@@ -510,15 +604,18 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     onChange(days.map((d, i) => i === dayIndex ? { ...d, stops: d.stops.map(s => s.id === stopId ? { ...s, note } : s) } : d))
   }
 
+  function updateStopName(dayIndex: number, stopId: string, name: string) {
+    onChange(days.map((d, i) => i === dayIndex ? { ...d, stops: d.stops.map(s => s.id === stopId ? { ...s, name } : s) } : d))
+  }
+
   function deleteStop(dayIndex: number, stopId: string) {
     update(days.map((d, i) => i === dayIndex ? { ...d, stops: d.stops.filter(s => s.id !== stopId) } : d))
   }
 
-  function addStop(dayIndex: number, name: string, note?: string, explicitTime?: string) {
+  function addStop(dayIndex: number, name: string, note?: string, explicitTime?: string, lat?: number, lng?: number) {
     const day = days[dayIndex]
     const time = explicitTime || formatHour(9 + day.stops.length * 2)
-    const newStop: Stop = { id: `manual-${Date.now()}-${Math.random()}`, name, time, category: 'other', note: note || '', suggested: false }
-    // If explicit time, sort after inserting; otherwise just append and recalc
+    const newStop: Stop = { id: `manual-${Date.now()}-${Math.random()}`, name, time, category: 'other', note: note || '', suggested: false, lat, lng, manualTime: !!explicitTime }
     if (explicitTime) {
       const newStops = [...day.stops, newStop].sort((a, b) => parseTime(a.time) - parseTime(b.time))
       onChange(days.map((d, i) => i === dayIndex ? { ...d, stops: newStops } : d))
@@ -537,23 +634,31 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
               <div className="px-5 py-3 flex items-center gap-3 rounded-t-2xl" style={{ background: `${color}15` }}>
                 <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
                 <span className="text-xs font-medium uppercase tracking-widest" style={{ color }}>Day {day.day}</span>
-                <span className="text-sm font-medium text-[#2C2416]">{day.title}</span>
+                <DayTitle
+                  title={day.title}
+                  dayIndex={dayIndex}
+                  viewOnly={viewOnly}
+                  onChange={title => updateDayTitle(dayIndex, title)}
+                />
                 {getDayDate(startDate, dayIndex) && <span className="text-xs text-[#8C8070] ml-1">· {getDayDate(startDate, dayIndex)}</span>}
                 <span className="ml-auto text-xs text-[#C8BFB0]">{day.stops.length} stops</span>
               </div>
               <div className="border border-[#E8DFD0] rounded-b-2xl overflow-hidden">
-                <SortableContext items={day.stops.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                  {day.stops.map(stop => (
-                    <StopRow key={stop.id} stop={stop} dayColor={color}
-                      onDelete={() => deleteStop(dayIndex, stop.id)}
-                      onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
-                      onNoteChange={note => updateStopNote(dayIndex, stop.id, note)}
-                      viewOnly={viewOnly}
-                      destination={destination}
-                    />
-                  ))}
-                </SortableContext>
-                {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time) => addStop(dayIndex, name, note, time)} />}
+                <DroppableDay id={`day-${day.day}`}>
+                  <SortableContext items={day.stops.map(s => s.id)} strategy={verticalListSortingStrategy}>
+                    {day.stops.map(stop => (
+                      <StopRow key={stop.id} stop={stop} dayColor={color}
+                        onDelete={() => deleteStop(dayIndex, stop.id)}
+                        onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
+                        onNoteChange={note => updateStopNote(dayIndex, stop.id, note)}
+                        onNameChange={name => updateStopName(dayIndex, stop.id, name)}
+                        viewOnly={viewOnly}
+                        destination={destination}
+                      />
+                    ))}
+                  </SortableContext>
+                </DroppableDay>
+                {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time, lat, lng) => addStop(dayIndex, name, note, time, lat, lng)} />}
               </div>
             </div>
           )
@@ -590,19 +695,18 @@ function preferredHour(category: string): number {
 }
 
 export function recalcTimes(stops: Stop[]): Stop[] {
-  // Assign category-aware times, then sort chronologically
-  const timed = stops.map(stop => ({ ...stop, time: formatHour(preferredHour(stop.category)), manualTime: false }))
-  timed.sort((a, b) => parseTime(a.time) - parseTime(b.time))
-  // Space out stops that land on the same hour
-  for (let i = 1; i < timed.length; i++) {
-    if (parseTime(timed[i].time) <= parseTime(timed[i - 1].time)) {
-      const prev = parseTime(timed[i - 1].time)
-      const newMin = prev + 90
-      const h = Math.floor(newMin / 60) % 24
-      timed[i] = { ...timed[i], time: formatHour(h) }
+  // Only assign a new time to stops that have a default/empty time — never overwrite manually-set times.
+  // A stop is considered manually-timed if it has manualTime: true OR if its time doesn't match
+  // the category default (meaning the user changed it).
+  return stops.map(stop => {
+    if (stop.manualTime) return stop // explicitly flagged as manual
+    const defaultTime = formatHour(preferredHour(stop.category))
+    if (stop.time && stop.time !== defaultTime && stop.time !== '12:00 PM') {
+      // Time differs from what we'd auto-assign — treat as manually set, preserve it
+      return stop
     }
-  }
-  return timed
+    return { ...stop, time: defaultTime }
+  })
 }
 
 function parseTime(t: string): number {

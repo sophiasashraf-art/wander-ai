@@ -258,6 +258,10 @@ export default function Home() {
   const [shareToast, setShareToast] = useState<string | null>(null)
   const [inputTab, setInputTab] = useState<'ai' | 'manual'>('ai')
   const [buildMode, setBuildMode] = useState<'ai' | 'build'>('ai')
+  const [tripMode, setTripMode] = useState<'single' | 'multi'>('single')
+  const [cities, setCities] = useState<{ name: string; days: number }[]>([{ name: '', days: 2 }])
+  const [arrivalTime, setArrivalTime] = useState('')   // e.g. "14:00"
+  const [departureTime, setDepartureTime] = useState('') // e.g. "11:00"
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -312,6 +316,18 @@ export default function Home() {
       setVibe(trip.vibe || 'balanced')
       setPlaces(placesData || [])
       setStartDate(trip.start_date || '')
+
+      // Restore multi-city mode if destination contains →
+      if (trip.destination?.includes('→')) {
+        setTripMode('multi')
+        const parts = trip.destination.split('→').map((s: string) => s.trim()).filter(Boolean)
+        const totalDays = parseInt(trip.duration) || parts.length * 2
+        const daysEach = Math.max(1, Math.floor(totalDays / parts.length))
+        setCities(parts.map((name: string, i: number) => ({
+          name,
+          days: i === parts.length - 1 ? totalDays - daysEach * (parts.length - 1) : daysEach,
+        })))
+      }
 
       if (trip.itinerary?.days) {
         setItinerary(trip.itinerary)
@@ -398,6 +414,20 @@ export default function Home() {
     setInput('')
     setSaved(true)
     setStartDate(trip.start_date || '')
+
+    // Restore multi-city mode if destination contains →
+    if (trip.destination?.includes('→')) {
+      setTripMode('multi')
+      const parts = trip.destination.split('→').map((s: string) => s.trim()).filter(Boolean)
+      const totalDays = parseInt(trip.duration) || parts.length * 2
+      const daysEach = Math.max(1, Math.floor(totalDays / parts.length))
+      setCities(parts.map((name: string, i: number) => ({
+        name,
+        days: i === parts.length - 1 ? totalDays - daysEach * (parts.length - 1) : daysEach,
+      })))
+    } else {
+      setTripMode('single')
+    }
     if (trip.itinerary?.days) {
       const normalized: Day[] = trip.itinerary.days.map((day: any) => ({
         ...day,
@@ -468,7 +498,10 @@ export default function Home() {
   }
 
   async function handleExtract() {
-    if ((!input.trim() && places.length === 0) || !destination.trim()) return
+    const hasDestination = tripMode === 'multi'
+      ? cities.some(c => c.name.trim())
+      : destination.trim()
+    if ((!input.trim() && places.length === 0) || !hasDestination) return
     setLoading(true)
     setSaved(false)
 
@@ -478,16 +511,23 @@ export default function Home() {
     let currentTripId = tripId
     let isNewTrip = false
 
+    // Resolve effective destination label
+    const effectiveDestination = tripMode === 'multi'
+      ? cities.filter(c => c.name.trim()).map(c => c.name).join(', ')
+      : destination
+    const effectiveDuration = tripMode === 'multi'
+      ? cities.reduce((s, c) => s + (c.days || 0), 0)
+      : duration
+
     // If destination changed from the saved trip, start fresh
     if (currentTripId) {
       const { data: existingTrip } = await supabase.from('trips').select('destination').eq('id', currentTripId).single()
-      if (existingTrip && existingTrip.destination !== destination) {
+      if (existingTrip && existingTrip.destination !== effectiveDestination) {
         currentTripId = null
         setTripId(null)
         setPlaces([])
         setItinerary(null)
-        // Only clear days if destination actually changed (new trip context)
-        setEditableDays(buildEmptyDays(duration))
+        setEditableDays(buildEmptyDays(effectiveDuration))
         isNewTrip = true
       }
     } else {
@@ -497,7 +537,7 @@ export default function Home() {
     if (!currentTripId) {
       const { data: trip, error: tripError } = await supabase
         .from('trips')
-        .insert({ destination, duration: `${duration} days`, vibe })
+        .insert({ destination: effectiveDestination, duration: `${effectiveDuration} days`, vibe })
         .select()
         .single()
       if (tripError || !trip) {
@@ -507,6 +547,10 @@ export default function Home() {
       }
       currentTripId = trip.id
       setTripId(currentTripId)
+      if (tripMode === 'multi') {
+        setDestination(effectiveDestination)
+        setDuration(effectiveDuration)
+      }
     }
 
     if (!input.trim()) {
@@ -525,7 +569,7 @@ export default function Home() {
       const importRes = await fetch('/api/import-itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: input, tripId: currentTripId, destination, duration }),
+        body: JSON.stringify({ text: input, tripId: currentTripId, destination: effectiveDestination, duration: effectiveDuration }),
       })
       const importData = await importRes.json()
       if (importData.days?.length > 0) {
@@ -633,7 +677,7 @@ export default function Home() {
     const res = await fetch('/api/generate-itinerary', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tripId }),
+      body: JSON.stringify({ tripId, arrivalTime: arrivalTime || undefined, departureTime: departureTime || undefined }),
     })
 
     const data = await res.json()
@@ -708,6 +752,135 @@ export default function Home() {
     setGenerating(false)
   }
 
+  async function handleGenerateMultiCity() {
+    const validCities = cities.filter(c => c.name.trim())
+    if (!validCities.length) return
+    setGenerating(true)
+
+    // Create trip if needed
+    let currentTripId = tripId
+    if (!currentTripId) {
+      const label = validCities.map(c => c.name).join(' → ')
+      const totalDays = validCities.reduce((s, c) => s + c.days, 0)
+      const { data: trip } = await supabase
+        .from('trips')
+        .insert({ destination: label, duration: `${totalDays} days`, vibe })
+        .select().single()
+      if (trip) {
+        currentTripId = trip.id
+        setTripId(trip.id)
+      }
+    } else {
+      const label = validCities.map(c => c.name).join(' → ')
+      const totalDays = validCities.reduce((s, c) => s + c.days, 0)
+      await supabase.from('trips').update({ destination: label, duration: `${totalDays} days`, vibe }).eq('id', currentTripId)
+      setDestination(label)
+      setDuration(totalDays)
+    }
+
+    const res = await fetch('/api/generate-multi-city', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cities: validCities, vibe, text: input || undefined, tripId: currentTripId, arrivalTime: arrivalTime || undefined, departureTime: departureTime || undefined }),
+    })
+    const data = await res.json()
+    if (!data.days?.length) { setGenerating(false); return }
+
+    const normalized = data.days.map((day: any) => ({
+      ...day,
+      stops: day.stops.map((stop: any, i: number) => ({
+        ...stop,
+        id: stop.id || `${day.day}-${i}-${stop.name}`,
+      })),
+    }))
+
+    setItinerary({ days: normalized })
+    setEditableDays(normalized)
+    setDestination(validCities.map(c => c.name).join(' → '))
+    setDuration(validCities.reduce((s, c) => s + c.days, 0))
+    if (currentTripId) {
+      window.history.replaceState({}, '', `?trip=${currentTripId}`)
+    }
+    setGenerating(false)
+  }
+
+  function exportToICS() {
+    if (!editableDays.length) return
+
+    // Fall back to today if no start date set
+    const baseDate = startDate || new Date().toISOString().slice(0, 10)
+
+    const lines: string[] = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//mapture//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+    ]
+
+    function parseTimeToHHMM(time: string): string {
+      const m = time?.match(/(\d+):(\d+)\s*(AM|PM)/i)
+      if (!m) return '090000'
+      let h = parseInt(m[1]); const min = parseInt(m[2])
+      if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12
+      if (m[3].toUpperCase() === 'AM' && h === 12) h = 0
+      return `${String(h).padStart(2,'0')}${String(min).padStart(2,'0')}00`
+    }
+
+    function dateStr(dayIndex: number, timeHHMM: string): string {
+      const d = new Date(baseDate + 'T00:00:00')
+      d.setDate(d.getDate() + dayIndex)
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${yyyy}${mm}${dd}T${timeHHMM}`
+    }
+
+    editableDays.forEach((day, dayIndex) => {
+      day.stops.forEach(stop => {
+        const startHHMM = parseTimeToHHMM(stop.time)
+        // Default duration: 1 hour
+        const startMinutes = parseInt(startHHMM.slice(0,2)) * 60 + parseInt(startHHMM.slice(2,4))
+        const endMinutes = startMinutes + 60
+        const endH = Math.floor(endMinutes / 60) % 24
+        const endM = endMinutes % 60
+        const endHHMM = `${String(endH).padStart(2,'0')}${String(endM).padStart(2,'0')}00`
+
+        const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@mapture`
+        const mapsUrl = stop.lat && stop.lng
+          ? `https://www.google.com/maps/search/?api=1&query=${stop.lat},${stop.lng}`
+          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.name + ' ' + destination)}`
+
+        const description = [
+          stop.note,
+          stop.address,
+          mapsUrl,
+        ].filter(Boolean).join('\\n')
+
+        lines.push('BEGIN:VEVENT')
+        lines.push(`UID:${uid}`)
+        lines.push(`DTSTART:${dateStr(dayIndex, startHHMM)}`)
+        lines.push(`DTEND:${dateStr(dayIndex, endHHMM)}`)
+        lines.push(`SUMMARY:${stop.name}`)
+        if (description) lines.push(`DESCRIPTION:${description}`)
+        if (stop.address) lines.push(`LOCATION:${stop.address.replace(/,/g, '\\,')}`)
+        lines.push('END:VEVENT')
+      })
+    })
+
+    lines.push('END:VCALENDAR')
+
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${destination.replace(/\s+/g, '-').toLowerCase()}-itinerary.ics`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const canExport = editableDays.some(d => d.stops.length > 0)
+
   const categoryColors: Record<string, string> = {
     restaurant: 'text-[#C17B4E]',
     activity: 'text-[#7A9E7E]',
@@ -769,7 +942,7 @@ export default function Home() {
       </button>
 
       <h1 className="font-serif text-4xl text-[#2C2416] mb-2">
-        wander<span className="text-[#C17B4E]">.</span>ai
+        mapture<span className="text-[#C17B4E]">.</span>
       </h1>
       <p className="text-[#8C8070] text-lg mb-12">
         Turn inspiration into your perfect trip
@@ -779,7 +952,24 @@ export default function Home() {
       {!tripSaved && (<>
       <div className="w-full max-w-2xl">
 
+        {/* Trip mode toggle */}
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => setTripMode('single')}
+            className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-all ${tripMode === 'single' ? 'border-[#C17B4E] bg-[#FEF8F4] text-[#C17B4E]' : 'border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E]'}`}
+          >
+            📍 Single destination
+          </button>
+          <button
+            onClick={() => setTripMode('multi')}
+            className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-all ${tripMode === 'multi' ? 'border-[#C17B4E] bg-[#FEF8F4] text-[#C17B4E]' : 'border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E]'}`}
+          >
+            🗺️ Multi-city / Road trip
+          </button>
+        </div>
+
         {/* Destination + Duration */}
+        {tripMode === 'single' && (
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 focus-within:border-[#C17B4E] transition-colors">
             <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
@@ -810,8 +1000,59 @@ export default function Home() {
             </div>
           </div>
         </div>
+        )}
 
-        {/* Start date */}
+        {/* Multi-city builder */}
+        {tripMode === 'multi' && (
+        <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 mb-3">
+          <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-3">
+            Cities &amp; days
+          </label>
+          <div className="flex flex-col gap-2">
+            {cities.map((city, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-xs text-[#C8BFB0] w-4 shrink-0">{i + 1}.</span>
+                <input
+                  type="text"
+                  placeholder="City or country..."
+                  value={city.name}
+                  onChange={e => setCities(prev => prev.map((c, j) => j === i ? { ...c, name: e.target.value } : c))}
+                  className="flex-1 bg-[#FDFAF5] border border-[#E8DFD0] rounded-xl px-3 py-2 text-sm text-[#2C2416] outline-none focus:border-[#C17B4E] transition-colors placeholder:text-[#C8BFB0]"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  max={14}
+                  value={city.days}
+                  onChange={e => setCities(prev => prev.map((c, j) => j === i ? { ...c, days: Number(e.target.value) } : c))}
+                  className="w-12 bg-[#FDFAF5] border border-[#E8DFD0] rounded-xl px-2 py-2 text-sm text-[#2C2416] outline-none focus:border-[#C17B4E] transition-colors text-center"
+                />
+                <span className="text-xs text-[#8C8070] shrink-0">days</span>
+                {cities.length > 1 && (
+                  <button
+                    onClick={() => setCities(prev => prev.filter((_, j) => j !== i))}
+                    className="text-[#C8BFB0] hover:text-red-400 text-lg leading-none shrink-0"
+                  >×</button>
+                )}
+              </div>
+            ))}
+            <button
+              onClick={() => setCities(prev => [...prev, { name: '', days: 2 }])}
+              className="text-xs text-[#C17B4E] hover:text-[#8B5330] text-left mt-1 transition-colors"
+            >
+              + Add city
+            </button>
+          </div>
+          <div className="mt-3 pt-3 border-t border-[#F5F0E8] flex items-center gap-2 text-xs text-[#8C8070]">
+            <span>Total:</span>
+            <span className="font-medium text-[#2C2416]">{cities.reduce((s, c) => s + (c.days || 0), 0)} days</span>
+            <span>·</span>
+            <span>{cities.filter(c => c.name.trim()).length} cities</span>
+          </div>
+        </div>
+        )}
+
+        {/* Start date + arrival/departure */}
         {mounted && <>
         <div className="flex items-center gap-2 mb-3 pl-1 flex-wrap">
           <span className="text-xs text-[#8C8070]">Start date</span>
@@ -822,36 +1063,39 @@ export default function Home() {
             onChange={e => setStartDate(e.target.value)}
             className="bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 outline-none text-sm text-[#2C2416] focus:border-[#C17B4E] transition-colors"
           />
+          <span className="text-xs text-[#C8BFB0] mx-1">·</span>
+          <span className="text-xs text-[#C8BFB0]">arrive</span>
+          <input
+            type="time"
+            value={arrivalTime}
+            onChange={e => setArrivalTime(e.target.value)}
+            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-20 py-0.5"
+          />
+          <span className="text-xs text-[#C8BFB0]">depart</span>
+          <input
+            type="time"
+            value={departureTime}
+            onChange={e => setDepartureTime(e.target.value)}
+            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-20 py-0.5"
+          />
           <span className="text-xs text-[#C8BFB0]">optional</span>
         </div>
         </>}
 
         {/* Vibe selector */}
-        <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 mb-3">
-          <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-3">
+        <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 mb-3 focus-within:border-[#C17B4E] transition-colors">
+          <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
             Travel style
           </label>
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              { key: 'relaxed', emoji: '🌿', label: 'Slow & relaxed', desc: '2-3 stops/day' },
-              { key: 'balanced', emoji: '⚖️', label: 'Balanced', desc: '4 stops/day' },
-              { key: 'everything', emoji: '⚡', label: 'See everything', desc: '5-6 stops/day' },
-            ].map(option => (
-              <button
-                key={option.key}
-                onClick={() => setVibe(option.key as any)}
-                className={`p-3 rounded-xl border text-left transition-all ${
-                  vibe === option.key
-                    ? 'border-[#C17B4E] bg-[#FEF8F4]'
-                    : 'border-[#E8DFD0] hover:border-[#C17B4E]'
-                }`}
-              >
-                <div className="text-lg mb-1">{option.emoji}</div>
-                <div className="text-xs font-medium text-[#2C2416]">{option.label}</div>
-                <div className="text-xs text-[#8C8070]">{option.desc}</div>
-              </button>
-            ))}
-          </div>
+          <select
+            value={vibe}
+            onChange={e => setVibe(e.target.value as any)}
+            className="w-full bg-transparent outline-none text-sm text-[#2C2416] cursor-pointer"
+          >
+            <option value="relaxed">🌿 Slow &amp; relaxed — 2-3 stops/day</option>
+            <option value="balanced">⚖️ Balanced — 4 stops/day</option>
+            <option value="everything">⚡ See everything — 5-6 stops/day</option>
+          </select>
         </div>
 
         {/* Mode picker */}
@@ -945,7 +1189,7 @@ export default function Home() {
         {mounted && buildMode === 'ai' && (
           <button
             onClick={handleExtract}
-            disabled={loading || (!input.trim() && places.length === 0) || !destination.trim()}
+            disabled={loading || (!input.trim() && places.length === 0) || (tripMode === 'single' ? !destination.trim() : !cities.some(c => c.name.trim()))}
             className="w-full py-4 bg-[#C17B4E] text-white rounded-xl font-medium text-sm hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary →' : 'Extract & generate →'}
@@ -1010,17 +1254,19 @@ export default function Home() {
 
           {/* Generate / Regenerate */}
           <div className="flex gap-3">
-            <input
-              type="number"
-              min={1}
-              max={30}
-              className="w-20 bg-white border border-[#E8DFD0] rounded-xl px-3 py-4 outline-none text-[#2C2416] text-sm text-center focus:border-[#C17B4E] transition-colors"
-              value={duration}
-              onChange={e => setDuration(Number(e.target.value))}
-            />
+            {tripMode === 'single' && (
+              <input
+                type="number"
+                min={1}
+                max={30}
+                className="w-20 bg-white border border-[#E8DFD0] rounded-xl px-3 py-4 outline-none text-[#2C2416] text-sm text-center focus:border-[#C17B4E] transition-colors"
+                value={duration}
+                onChange={e => setDuration(Number(e.target.value))}
+              />
+            )}
             <button
-              onClick={handleGenerateItinerary}
-              disabled={generating || !tripId}
+              onClick={tripMode === 'multi' ? handleGenerateMultiCity : handleGenerateItinerary}
+              disabled={generating || (tripMode === 'single' ? !tripId : !cities.some(c => c.name.trim()))}
               className="flex-1 py-4 bg-[#2C2416] text-white rounded-xl font-medium text-sm hover:bg-[#5C5040] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {generating ? 'Building your itinerary...' : itinerary ? 'Regenerate itinerary →' : 'Generate itinerary →'}
@@ -1073,6 +1319,15 @@ export default function Home() {
                   ↩ Undo
                 </button>
               )}
+              {canExport && (
+                <button
+                  onClick={exportToICS}
+                  className="text-xs px-3 py-1.5 border border-[#E8DFD0] text-[#8C8070] rounded-lg hover:border-[#C17B4E] hover:text-[#C17B4E] transition-colors"
+                  title="Export to Google Calendar / Apple Calendar"
+                >
+                  📅 Export
+                </button>
+              )}
               {tripId && !viewOnly && (
                 <ShareButton onShare={shareLink} />
               )}
@@ -1109,17 +1364,38 @@ export default function Home() {
           {/* Duration editor for saved trips */}
           {tripSaved && !viewOnly && (
             <div className="flex items-center gap-3 mb-6 flex-wrap">
-              <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5">
-                <span className="text-xs text-[#8C8070]">Days:</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={30}
-                  value={duration}
-                  onChange={e => setDuration(Number(e.target.value))}
-                  className="w-10 bg-transparent outline-none text-sm text-[#2C2416] text-center"
-                />
-              </div>
+              {tripMode === 'multi' ? (
+                // Multi-city: show per-city day editors
+                <div className="bg-white border border-[#E8DFD0] rounded-xl px-3 py-2 flex flex-col gap-1.5">
+                  <span className="text-xs text-[#8C8070] mb-0.5">Days per city:</span>
+                  {cities.map((city, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="text-xs text-[#2C2416] font-medium w-24 truncate">{city.name}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={14}
+                        value={city.days}
+                        onChange={e => setCities(prev => prev.map((c, j) => j === i ? { ...c, days: Number(e.target.value) } : c))}
+                        className="w-10 bg-[#FDFAF5] border border-[#E8DFD0] rounded-lg px-2 py-1 text-xs text-[#2C2416] outline-none focus:border-[#C17B4E] text-center"
+                      />
+                      <span className="text-xs text-[#8C8070]">days</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5">
+                  <span className="text-xs text-[#8C8070]">Days:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={duration}
+                    onChange={e => setDuration(Number(e.target.value))}
+                    className="w-10 bg-transparent outline-none text-sm text-[#2C2416] text-center"
+                  />
+                </div>
+              )}
               <div className="flex items-center gap-1.5 bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 focus-within:border-[#C17B4E] transition-colors">
                 <span className="text-xs text-[#8C8070]">Start:</span>
                 <input
@@ -1131,7 +1407,7 @@ export default function Home() {
                 />
               </div>
               <button
-                onClick={handleGenerateItinerary}
+                onClick={tripMode === 'multi' ? handleGenerateMultiCity : handleGenerateItinerary}
                 disabled={generating}
                 className="text-xs px-3 py-1.5 bg-[#2C2416] text-white rounded-lg hover:bg-[#5C5040] transition-colors disabled:opacity-50"
               >
@@ -1140,62 +1416,85 @@ export default function Home() {
             </div>
           )}
 
-          {/* Map */}
-          {mapMarkers.length > 0 && (
-            <div className="rounded-2xl overflow-hidden mb-8 h-80 border border-[#E8DFD0]">
-              <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
-                <Map
-                  defaultCenter={mapCenter}
-                  defaultZoom={12}
-                  mapId="wander-ai-map"
-                  gestureHandling="greedy"
-                  disableDefaultUI={false}
-                >
-                  {mapMarkers.map((marker: any, i: number) => (
-                    <AdvancedMarker
-                      key={i}
-                      position={{ lat: marker.lat, lng: marker.lng }}
-                      title={marker.name}
+          {/* Map — per-city for multi-city trips, single map otherwise */}
+          {mapMarkers.length > 0 && (() => {
+            const isMultiCity = destination.includes('→') || editableDays.some((d: any) => d.city)
+            if (!isMultiCity) {
+              return (
+                <div className="rounded-2xl overflow-hidden mb-8 h-80 border border-[#E8DFD0]">
+                  <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
+                    <Map
+                      defaultCenter={mapCenter}
+                      defaultZoom={12}
+                      mapId="mapture-map"
+                      gestureHandling="greedy"
+                      disableDefaultUI={false}
                     >
-                      <div style={{
-                        background: marker.color,
-                        border: '2px solid white',
-                        borderRadius: '20px',
-                        padding: '4px 8px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        color: 'white',
-                        fontSize: 11,
-                        fontWeight: 600,
-                        boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
-                        maxWidth: 160,
-                      }}>
-                        <span style={{
-                          background: 'rgba(255,255,255,0.3)',
-                          borderRadius: '50%',
-                          width: 16,
-                          height: 16,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          fontSize: 10,
-                        }}>
-                          {marker.day}
-                        </span>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {marker.name}
-                        </span>
+                      {mapMarkers.map((marker: any, i: number) => (
+                        <AdvancedMarker key={i} position={{ lat: marker.lat, lng: marker.lng }} title={marker.name}>
+                          <div style={{ background: marker.color, border: '2px solid white', borderRadius: '20px', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4, color: 'white', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)', cursor: 'pointer', whiteSpace: 'nowrap', maxWidth: 160 }}>
+                            <span style={{ background: 'rgba(255,255,255,0.3)', borderRadius: '50%', width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 10 }}>{marker.day}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{marker.name}</span>
+                          </div>
+                        </AdvancedMarker>
+                      ))}
+                    </Map>
+                  </APIProvider>
+                </div>
+              )
+            }
+
+            // Multi-city: group markers by city, render one map per city
+            const cityGroups: Record<string, { markers: any[]; color: string }> = {}
+            editableDays.forEach((day: any, dayIndex: number) => {
+              // Use day.city if present, otherwise extract from title (e.g. "Paris — Montmartre" → "Paris")
+              const city = day.city || (day.title?.includes('—') ? day.title.split('—')[0].trim() : day.title) || `Day ${day.day}`
+              if (!cityGroups[city]) cityGroups[city] = { markers: [], color: DAY_COLORS[dayIndex % DAY_COLORS.length] }
+              day.stops.forEach((stop: any) => {
+                if (stop.lat && stop.lng) {
+                  cityGroups[city].markers.push({ name: stop.name, lat: stop.lat, lng: stop.lng, day: day.day, color: DAY_COLORS[dayIndex % DAY_COLORS.length] })
+                }
+              })
+            })
+
+            return (
+              <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
+                <div className="flex flex-col gap-4 mb-8">
+                  {Object.entries(cityGroups).filter(([, g]) => g.markers.length > 0).map(([city, group]) => {
+                    const lats = group.markers.map(m => m.lat)
+                    const lngs = group.markers.map(m => m.lng)
+                    const centerLat = (Math.max(...lats) + Math.min(...lats)) / 2
+                    const centerLng = (Math.max(...lngs) + Math.min(...lngs)) / 2
+                    const spread = Math.max(Math.max(...lats) - Math.min(...lats), Math.max(...lngs) - Math.min(...lngs))
+                    const zoom = spread < 0.02 ? 14 : spread < 0.1 ? 13 : spread < 0.5 ? 12 : 11
+                    return (
+                      <div key={city}>
+                        <p className="text-xs font-medium text-[#8C8070] uppercase tracking-widest mb-2">{city}</p>
+                        <div className="rounded-2xl overflow-hidden h-56 border border-[#E8DFD0]">
+                          <Map
+                            defaultCenter={{ lat: centerLat, lng: centerLng }}
+                            defaultZoom={zoom}
+                            mapId={`mapture-map-${city.replace(/\s+/g, '-').toLowerCase()}`}
+                            gestureHandling="greedy"
+                            disableDefaultUI={false}
+                          >
+                            {group.markers.map((marker: any, i: number) => (
+                              <AdvancedMarker key={i} position={{ lat: marker.lat, lng: marker.lng }} title={marker.name}>
+                                <div style={{ background: marker.color, border: '2px solid white', borderRadius: '20px', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4, color: 'white', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)', cursor: 'pointer', whiteSpace: 'nowrap', maxWidth: 160 }}>
+                                  <span style={{ background: 'rgba(255,255,255,0.3)', borderRadius: '50%', width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 10 }}>{marker.day}</span>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{marker.name}</span>
+                                </div>
+                              </AdvancedMarker>
+                            ))}
+                          </Map>
+                        </div>
                       </div>
-                    </AdvancedMarker>
-                  ))}
-                </Map>
+                    )
+                  })}
+                </div>
               </APIProvider>
-            </div>
-          )}
+            )
+          })()}
 
           {/* Day legend */}
           <div className="flex gap-3 mb-6 flex-wrap">
