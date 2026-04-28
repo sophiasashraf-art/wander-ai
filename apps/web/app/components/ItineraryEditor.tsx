@@ -171,10 +171,11 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
                   setShowPopup(p => !p)
                 }}
                 onDoubleClick={() => { if (!viewOnly) setEditingName(true) }}
-                className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full"
+                className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full flex items-center gap-1 group/place"
                 title={!viewOnly ? 'Click for details · Double-click to edit name' : 'View place details'}
               >
-                {stop.name}
+                <span className="text-[#C8BFB0] group-hover/place:text-[#C17B4E] transition-colors shrink-0 text-xs">📍</span>
+                <span className="truncate" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: '#C8BFB0', textUnderlineOffset: '3px' }}>{stop.name}</span>
               </button>
             ) : (
               <p
@@ -314,6 +315,7 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
           </div>
         ) : resolvedPhotoUrl ? (
           <img
+            key={resolvedPhotoUrl}
             src={resolvedPhotoUrl}
             alt={stop.name}
             className="w-full object-cover"
