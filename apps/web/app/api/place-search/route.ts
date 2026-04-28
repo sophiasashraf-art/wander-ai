@@ -53,7 +53,7 @@ export async function GET(req: Request) {
         address: result?.formatted_address || null,
         opening_hours: result?.opening_hours?.weekday_text || null,
       },
-    })
+    }, { headers: { 'Cache-Control': 'no-store' } })
   } catch (e: any) {
     console.error('[place-search] error:', e.message, e?.response?.data || '')
     return NextResponse.json({ result: null, error: e.message })
