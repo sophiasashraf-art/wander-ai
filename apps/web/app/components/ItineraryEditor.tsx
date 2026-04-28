@@ -115,7 +115,7 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
   return (
     <div ref={setNodeRef} style={style} className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white">
       {!viewOnly && (
-        <button {...attributes} {...listeners} className="mt-1 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity shrink-0 touch-none" aria-label="Drag to reorder">
+        <button {...attributes} {...listeners} className="mt-1 cursor-grab active:cursor-grabbing opacity-40 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0 touch-none" aria-label="Drag to reorder">
           <GripIcon />
         </button>
       )}
@@ -225,7 +225,7 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
         ) : null}
       </div>
       {!viewOnly && (
-        <button onClick={onDelete} className="mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none" aria-label="Remove stop">×</button>
+        <button onClick={onDelete} className="mt-0.5 opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none" aria-label="Remove stop">×</button>
       )}
     </div>
   )
@@ -235,21 +235,28 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
   stop: Stop; destination: string; anchorRect: DOMRect; onClose: () => void
 }) {
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.name + (destination ? ` ${destination}` : ''))}`
-  const hoursLine = stop.opening_hours ? getTodayHours(stop.opening_hours) : null
-  const outsideHours = stop.opening_hours && stop.time ? isOutsideHours(stop.time, stop.opening_hours) : false
-  const photoUrl = stop.photo_reference ? `/api/place-photo?ref=${encodeURIComponent(stop.photo_reference)}` : null
 
-  // Position: prefer right of anchor, flip left if near right edge
   const POPUP_W = 260
-  const POPUP_H = 280
+  const POPUP_H = 300
   const viewW = typeof window !== 'undefined' ? window.innerWidth : 1200
   const viewH = typeof window !== 'undefined' ? window.innerHeight : 800
-  let left = anchorRect.right + 8
-  if (left + POPUP_W > viewW - 12) left = anchorRect.left - POPUP_W - 8
-  let top = anchorRect.top
-  if (top + POPUP_H > viewH - 12) top = viewH - POPUP_H - 12
+  const MARGIN = 8
 
-  const priceStr = stop.price_level != null ? '$'.repeat(stop.price_level + 1) : null
+  // On mobile (narrow screens), center horizontally and pin near anchor vertically
+  let left: number
+  let top: number
+  if (viewW < 500) {
+    left = Math.max(MARGIN, (viewW - POPUP_W) / 2)
+    top = Math.min(anchorRect.bottom + 4, viewH - POPUP_H - MARGIN)
+    if (top < MARGIN) top = MARGIN
+  } else {
+    left = anchorRect.right + MARGIN
+    if (left + POPUP_W > viewW - MARGIN) left = anchorRect.left - POPUP_W - MARGIN
+    left = Math.max(MARGIN, left)
+    top = anchorRect.top
+    if (top + POPUP_H > viewH - MARGIN) top = viewH - POPUP_H - MARGIN
+    if (top < MARGIN) top = MARGIN
+  }
 
   // Lazy-fetch place details if we don't already have a photo
   const [fetched, setFetched] = useState<{
@@ -259,7 +266,12 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
   const [fetchLoading, setFetchLoading] = useState(!stop.photo_reference)
 
   useEffect(() => {
-    if (stop.photo_reference) return // already have it from enrichment
+    // Reset fetched state whenever the stop changes
+    setFetched(null)
+    if (stop.photo_reference) {
+      setFetchLoading(false)
+      return
+    }
     setFetchLoading(true)
     fetch(`/api/place-search?name=${encodeURIComponent(stop.name)}&location=${encodeURIComponent(destination)}`)
       .then(r => r.json())
@@ -269,7 +281,7 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
       })
       .catch(err => console.warn('place-search fetch error:', err))
       .finally(() => setFetchLoading(false))
-  }, [stop.name, destination, stop.photo_reference])
+  }, [stop.name, stop.photo_reference, destination])
 
   // Merge fetched data with stop data (stop data takes priority if already set)
   const photoRef = stop.photo_reference || fetched?.photo_reference
@@ -296,7 +308,6 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
         style={{ left, top, width: POPUP_W }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Photo or loading or fallback */}
         {fetchLoading ? (
           <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 100 }}>
             <span className="text-xs text-[#C8BFB0]">Loading...</span>
