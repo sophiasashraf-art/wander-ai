@@ -1,11 +1,10 @@
 [build]
   base = "apps/web"
-  command = "npm install -g npm@10.2.4 && npm install --legacy-peer-deps && npm run build"
+  command = "pnpm install --no-frozen-lockfile && pnpm run build"
   publish = ".next"
 
 [build.environment]
   NODE_VERSION = "20"
-  NETLIFY_USE_PNPM = "false"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
