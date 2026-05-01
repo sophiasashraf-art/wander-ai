@@ -87,7 +87,12 @@ Before the JSON, write a brief friendly summary of the plan. After the JSON, ask
 
     if (jsonMatch) {
       try {
-        const parsed = JSON.parse(jsonMatch[1])
+        // Clean up common GPT JSON issues: trailing commas, comments
+        const cleanJson = jsonMatch[1]
+          .replace(/,\s*([}\]])/g, '$1')  // trailing commas
+          .replace(/\/\/.*$/gm, '')        // line comments
+          .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+        const parsed = JSON.parse(cleanJson)
         if (parsed.days?.length > 0) {
           // Geocode all places in parallel
           const allStops = parsed.days.flatMap((d: any) =>

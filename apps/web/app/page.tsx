@@ -1167,8 +1167,8 @@ export default function Home() {
               }`}
             >
               <div className="text-xl mb-1">✨</div>
-              <div className="text-xs font-medium text-[#2C2416]">Paste & extract</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">Paste links or notes, AI builds it</div>
+              <div className="text-xs font-medium text-[#2C2416]">From your saves</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">Paste links, notes, or screenshots. We'll organize it</div>
             </button>
             <button
               onClick={() => setBuildMode('build')}
@@ -1179,8 +1179,8 @@ export default function Home() {
               }`}
             >
               <div className="text-xl mb-1">🗓️</div>
-              <div className="text-xs font-medium text-[#2C2416]">Build your own</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">Add places day by day yourself</div>
+              <div className="text-xs font-medium text-[#2C2416]">Plan it myself</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">Add places day by day</div>
             </button>
             <button
               onClick={() => setBuildMode('agent')}
@@ -1191,8 +1191,8 @@ export default function Home() {
               }`}
             >
               <div className="text-xl mb-1">🤖</div>
-              <div className="text-xs font-medium text-[#2C2416]">Plan for me</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">AI plans your entire trip</div>
+              <div className="text-xs font-medium text-[#2C2416]">Explore ideas</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">Chat to get ideas and build your trip</div>
             </button>
           </div>
         )}
