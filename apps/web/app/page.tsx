@@ -91,7 +91,7 @@ function PlaceListPopup({ name, destination, anchorRect, onClose }: {
             <span className="text-xs text-[#C8BFB0]">Loading...</span>
           </div>
         ) : photoUrl ? (
-          <img src={photoUrl} alt={name} className="w-full object-cover" style={{ height: 140 }}
+          <img key={photoUrl} src={photoUrl} alt={name} className="w-full object-cover" style={{ height: 140 }}
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
         ) : (
           <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 80 }}>
@@ -257,11 +257,15 @@ export default function Home() {
   const [viewOnly, setViewOnly] = useState(false)
   const [shareToast, setShareToast] = useState<string | null>(null)
   const [inputTab, setInputTab] = useState<'ai' | 'manual'>('ai')
-  const [buildMode, setBuildMode] = useState<'ai' | 'build'>('ai')
+  const [buildMode, setBuildMode] = useState<'ai' | 'build' | 'agent'>('ai')
   const [tripMode, setTripMode] = useState<'single' | 'multi'>('single')
   const [cities, setCities] = useState<{ name: string; days: number }[]>([{ name: '', days: 2 }])
   const [arrivalTime, setArrivalTime] = useState('')   // e.g. "14:00"
   const [departureTime, setDepartureTime] = useState('') // e.g. "11:00"
+  const [agentMessages, setAgentMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
+  const [agentInput, setAgentInput] = useState('')
+  const [agentLoading, setAgentLoading] = useState(false)
+  const agentChatRef = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -458,6 +462,8 @@ export default function Home() {
     setStartDate('')
     setItinerary(null)
     setEditableDays([])
+    setAgentMessages([])
+    setAgentInput('')
     window.history.replaceState({}, '', '/')
   }
 
@@ -495,6 +501,57 @@ export default function Home() {
     await supabase.from('trips').update({ saved: true }).eq('id', tripId)
     setTripSaved(true)
     window.history.replaceState({}, '', `?trip=${tripId}`)
+  }
+
+  async function handleAgentSend(userMsg?: string) {
+    const msg = userMsg || agentInput.trim()
+    if (!msg || !destination.trim()) return
+    setAgentInput('')
+    const newMessages = [...agentMessages, { role: 'user' as const, content: msg }]
+    setAgentMessages(newMessages)
+    setAgentLoading(true)
+    setTimeout(() => agentChatRef.current?.scrollTo({ top: agentChatRef.current.scrollHeight, behavior: 'smooth' }), 50)
+
+    try {
+      const res = await fetch('/api/agent-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: newMessages,
+          destination,
+          duration: `${duration}`,
+          vibe,
+          arrivalTime: arrivalTime || undefined,
+          departureTime: departureTime || undefined,
+        }),
+      })
+      const data = await res.json()
+      setAgentMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
+
+      if (data.itinerary?.days?.length > 0) {
+        const id = await ensureTripCreated()
+        if (id) {
+          const normalized: Day[] = data.itinerary.days.map((day: any) => ({
+            ...day,
+            stops: day.stops.map((stop: any, i: number) => ({
+              ...stop,
+              id: stop.id || `agent-${day.day}-${i}-${stop.name}`,
+            })),
+          }))
+          setItinerary({ days: normalized })
+          setEditableDays(normalized)
+          if (data.places?.length > 0) {
+            setPlaces(data.places)
+          }
+          await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', id)
+          window.history.replaceState({}, '', `?trip=${id}`)
+        }
+      }
+    } catch (e) {
+      setAgentMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again?' }])
+    }
+    setAgentLoading(false)
+    setTimeout(() => agentChatRef.current?.scrollTo({ top: agentChatRef.current.scrollHeight, behavior: 'smooth' }), 50)
   }
 
   async function handleExtract() {
@@ -945,7 +1002,7 @@ export default function Home() {
         mapture<span className="text-[#C17B4E]">.</span>
       </h1>
       <p className="text-[#8C8070] text-lg mb-12">
-        Turn inspiration into your perfect trip
+        Turn all your travel finds into a trip
       </p>
 
       {/* Only show the build form when not viewing a saved trip */}
@@ -1100,7 +1157,7 @@ export default function Home() {
 
         {/* Mode picker */}
         {mounted && (
-          <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="grid grid-cols-3 gap-3 mb-4">
             <button
               onClick={() => setBuildMode('ai')}
               className={`p-4 rounded-2xl border text-left transition-all ${
@@ -1110,7 +1167,7 @@ export default function Home() {
               }`}
             >
               <div className="text-xl mb-1">✨</div>
-              <div className="text-xs font-medium text-[#2C2416]">AI Scraper</div>
+              <div className="text-xs font-medium text-[#2C2416]">Paste & extract</div>
               <div className="text-xs text-[#8C8070] mt-0.5">Paste links or notes, AI builds it</div>
             </button>
             <button
@@ -1124,6 +1181,18 @@ export default function Home() {
               <div className="text-xl mb-1">🗓️</div>
               <div className="text-xs font-medium text-[#2C2416]">Build your own</div>
               <div className="text-xs text-[#8C8070] mt-0.5">Add places day by day yourself</div>
+            </button>
+            <button
+              onClick={() => setBuildMode('agent')}
+              className={`p-4 rounded-2xl border text-left transition-all ${
+                buildMode === 'agent'
+                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
+                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
+              }`}
+            >
+              <div className="text-xl mb-1">🤖</div>
+              <div className="text-xs font-medium text-[#2C2416]">Plan for me</div>
+              <div className="text-xs text-[#8C8070] mt-0.5">AI plans your entire trip</div>
             </button>
           </div>
         )}
@@ -1226,6 +1295,78 @@ export default function Home() {
         )}
         {mounted && buildMode === 'build' && !destination.trim() && (
           <p className="text-xs text-[#C8BFB0] text-center py-4">Enter a destination above to start building</p>
+        )}
+
+        {/* Plan for me mode — chat agent */}
+        {mounted && buildMode === 'agent' && (
+          <div className="bg-white border border-[#E8DFD0] rounded-2xl overflow-hidden mb-4">
+            {/* Chat messages */}
+            <div ref={agentChatRef} className="max-h-80 overflow-y-auto p-4 space-y-3">
+              {agentMessages.length === 0 && (
+                <div className="text-center py-6">
+                  <p className="text-sm text-[#2C2416] mb-2">Tell me what kind of trip you want!</p>
+                  <p className="text-xs text-[#8C8070] mb-4">Describe your vibe, interests, or just say "plan it" and I'll build your whole trip.</p>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {[
+                      'Urban sightseeing with shopping',
+                      'Foodie trip — best local eats',
+                      'Chill beaches and sunset spots',
+                      'Just plan the whole thing for me',
+                    ].map(suggestion => (
+                      <button
+                        key={suggestion}
+                        onClick={() => handleAgentSend(suggestion)}
+                        className="text-xs px-3 py-1.5 border border-[#E8DFD0] rounded-full text-[#8C8070] hover:border-[#C17B4E] hover:text-[#C17B4E] transition-colors"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {agentMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                    msg.role === 'user'
+                      ? 'bg-[#C17B4E] text-white rounded-br-md'
+                      : 'bg-[#F5F0E8] text-[#2C2416] rounded-bl-md'
+                  }`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {agentLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-[#F5F0E8] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm text-[#8C8070]">
+                    <span className="inline-flex gap-1">
+                      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>·</span>
+                      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>·</span>
+                      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>·</span>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Input */}
+            <div className="border-t border-[#E8DFD0] px-4 py-3 flex gap-2">
+              <input
+                type="text"
+                value={agentInput}
+                onChange={e => setAgentInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAgentSend() } }}
+                placeholder={destination.trim() ? 'Describe your ideal trip...' : 'Set a destination above first'}
+                disabled={!destination.trim() || agentLoading}
+                className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0] disabled:opacity-50"
+              />
+              <button
+                onClick={() => handleAgentSend()}
+                disabled={!agentInput.trim() || !destination.trim() || agentLoading}
+                className="text-xs px-4 py-1.5 bg-[#C17B4E] text-white rounded-lg hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send
+              </button>
+            </div>
+          </div>
         )}
       </div>
 

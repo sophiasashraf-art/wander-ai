@@ -86,14 +86,10 @@ function parseMin(t: string): number {
 
 export async function POST(req: Request) {
   try {
-    const { tripId, arrivalTime, departureTime } = await req.json()
+    const { tripId, arrivalTime, departureTime, fromScratch } = await req.json()
 
     const { data: trip } = await supabase.from('trips').select('*').eq('id', tripId).single()
     const { data: places } = await supabase.from('places').select('*').eq('trip_id', tripId)
-
-    if (!places || places.length === 0) {
-      return NextResponse.json({ error: 'No places found' }, { status: 400 })
-    }
 
     const vibeConfig = {
       relaxed: { stopsPerDay: 3 },
@@ -102,6 +98,57 @@ export async function POST(req: Request) {
     }
     const config = vibeConfig[(trip?.vibe as keyof typeof vibeConfig) || 'balanced']
     const numDays = parseInt(trip?.duration) || 3
+
+    // ── "Plan for me" mode: build entire itinerary from scratch ──
+    if (fromScratch || !places || places.length === 0) {
+      const vibeNotes: Record<string, string> = {
+        relaxed: 'Slow pace, long meals, rest time between stops. Quality over quantity.',
+        balanced: 'Good mix of sightseeing, food, and downtime.',
+        everything: 'Pack in as much as possible. Maximize the trip.',
+      }
+      const vNote = vibeNotes[(trip?.vibe as string) || 'balanced']
+
+      let timeConstraints = ''
+      if (arrivalTime) timeConstraints += `\nDay 1: Traveler arrives at ${arrivalTime}. Do NOT schedule anything before this time.`
+      if (departureTime) timeConstraints += `\nDay ${numDays}: Traveler departs at ${departureTime}. Do NOT schedule anything at or after this time.`
+
+      const scratchRes = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'system',
+          content: `You are an expert travel planner. Build a complete ${numDays}-day itinerary for ${trip?.destination}.
+
+Style: ${vNote}
+Stops per day: ${config.stopsPerDay}
+${timeConstraints}
+
+Rules:
+- Only suggest real, well-known, highly-rated places
+- Assign realistic times based on category:
+  • Cafes/breakfast → 8–10 AM
+  • Parks/markets/hikes → 10 AM–12 PM
+  • Lunch restaurants → 12–2 PM
+  • Museums/galleries/landmarks → 2–5 PM
+  • Dinner restaurants → 7–9 PM
+  • Bars/nightlife → 9 PM+
+- Group geographically close places on the same day
+- Give each day a descriptive title (area or theme)
+- Write a one-sentence tip/note for each stop
+- Mark every stop with "suggested": true
+- Order stops chronologically within each day
+
+Return valid JSON:
+{"days": [{"day": 1, "title": "...", "stops": [{"time": "9:00 AM", "name": "...", "category": "...", "note": "...", "suggested": true}]}]}`,
+        }, {
+          role: 'user',
+          content: `Plan a ${numDays}-day trip to ${trip?.destination} with ${config.stopsPerDay} stops per day.`,
+        }],
+        response_format: { type: 'json_object' },
+      })
+
+      const scratchResult = JSON.parse(scratchRes.choices[0].message.content || '{"days":[]}')
+      return NextResponse.json({ days: scratchResult.days || [] })
+    }
 
     // ── Step 1: Assign places to days IN CODE ──
     // Use geocoded places if available, fall back to all
