@@ -1111,31 +1111,31 @@ export default function Home() {
 
         {/* Start date + arrival/departure */}
         {mounted && <>
-        <div className="flex items-center gap-2 mb-3 pl-1 flex-wrap">
-          <span className="text-xs text-[#8C8070]">Start date</span>
+        <div className="flex items-center gap-1.5 mb-3 pl-1 overflow-x-auto whitespace-nowrap">
+          <span className="text-xs text-[#8C8070] shrink-0">Start</span>
           <input
             type="date"
             min="2026-01-01"
             value={startDate}
             onChange={e => setStartDate(e.target.value)}
-            className="bg-white border border-[#E8DFD0] rounded-xl px-3 py-1.5 outline-none text-sm text-[#2C2416] focus:border-[#C17B4E] transition-colors"
+            className="bg-white border border-[#E8DFD0] rounded-lg px-2 py-1 outline-none text-xs text-[#2C2416] focus:border-[#C17B4E] transition-colors"
           />
-          <span className="text-xs text-[#C8BFB0] mx-1">·</span>
-          <span className="text-xs text-[#C8BFB0]">arrive</span>
+          <span className="text-xs text-[#C8BFB0]">·</span>
+          <span className="text-xs text-[#C8BFB0] shrink-0">arrive</span>
           <input
             type="time"
             value={arrivalTime}
             onChange={e => setArrivalTime(e.target.value)}
-            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-20 py-0.5"
+            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-16 py-0.5"
           />
-          <span className="text-xs text-[#C8BFB0]">depart</span>
+          <span className="text-xs text-[#C8BFB0] shrink-0">depart</span>
           <input
             type="time"
             value={departureTime}
             onChange={e => setDepartureTime(e.target.value)}
-            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-20 py-0.5"
+            className="bg-transparent border-b border-[#E8DFD0] outline-none text-xs text-[#8C8070] focus:border-[#C17B4E] transition-colors w-16 py-0.5"
           />
-          <span className="text-xs text-[#C8BFB0]">optional</span>
+          <span className="text-xs text-[#C8BFB0] shrink-0">optional</span>
         </div>
         </>}
 
@@ -1255,7 +1255,7 @@ export default function Home() {
         )}
 
         {/* AI mode extract button */}
-        {mounted && buildMode === 'ai' && (
+        {mounted && buildMode === 'ai' && (<>
           <button
             onClick={handleExtract}
             disabled={loading || (!input.trim() && places.length === 0) || (tripMode === 'single' ? !destination.trim() : !cities.some(c => c.name.trim()))}
@@ -1263,7 +1263,8 @@ export default function Home() {
           >
             {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary →' : 'Extract & generate →'}
           </button>
-        )}
+          <p className="text-xs text-[#C8BFB0] text-center mt-2">We’ll put it together. You can tweak anything after.</p>
+        </>)}
 
         {/* Build your own mode — inline itinerary editor */}
         {mounted && buildMode === 'build' && destination.trim() && editableDays.length > 0 && (
@@ -1298,7 +1299,7 @@ export default function Home() {
         )}
 
         {/* Plan for me mode — chat agent */}
-        {mounted && buildMode === 'agent' && (
+        {mounted && buildMode === 'agent' && (<>
           <div className="bg-white border border-[#E8DFD0] rounded-2xl overflow-hidden mb-4">
             {/* Chat messages */}
             <div ref={agentChatRef} className="max-h-80 overflow-y-auto p-4 space-y-3">
@@ -1367,7 +1368,8 @@ export default function Home() {
               </button>
             </div>
           </div>
-        )}
+          <p className="text-xs text-[#C8BFB0] text-center mt-2">We’ll put it together. You can tweak anything after.</p>
+        </>)}
       </div>
 
       {/* Extracted places */}
@@ -1412,6 +1414,7 @@ export default function Home() {
             >
               {generating ? 'Building your itinerary...' : itinerary ? 'Regenerate itinerary →' : 'Generate itinerary →'}
             </button>
+            <p className="text-xs text-[#C8BFB0] text-center mt-2">We’ll put it together. You can tweak anything after.</p>
           </div>
         </div>
       )}
