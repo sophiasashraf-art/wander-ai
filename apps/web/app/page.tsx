@@ -477,10 +477,13 @@ export default function Home() {
   // Create trip in Supabase if not yet created (for manual place adds before extract)
   async function ensureTripCreated(): Promise<string | null> {
     if (tripId) return tripId
-    if (!destination.trim()) return null
+    const dest = tripMode === 'multi'
+      ? cities.filter(c => c.name.trim()).map(c => c.name.trim()).join(', ')
+      : destination.trim()
+    if (!dest) return null
     const { data: trip, error } = await supabase
       .from('trips')
-      .insert({ destination, duration: `${duration} days`, vibe })
+      .insert({ destination: dest, duration: `${duration} days`, vibe })
       .select()
       .single()
     if (error || !trip) return null
@@ -512,7 +515,10 @@ export default function Home() {
 
   async function handleAgentSend(userMsg?: string) {
     const msg = userMsg || agentInput.trim()
-    if (!msg || !destination.trim()) return
+    const agentDestination = tripMode === 'multi'
+      ? cities.filter(c => c.name.trim()).map(c => c.name.trim()).join(', ')
+      : destination.trim()
+    if (!msg || !agentDestination) return
     setAgentInput('')
     const newMessages = [...agentMessages, { role: 'user' as const, content: msg }]
     setAgentMessages(newMessages)
@@ -525,8 +531,13 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: newMessages,
-          destination,
-          duration: `${duration}`,
+          destination: agentDestination,
+          duration: tripMode === 'multi'
+            ? `${cities.filter(c => c.name.trim()).reduce((sum, c) => sum + c.days, 0)}`
+            : `${duration}`,
+          cities: tripMode === 'multi'
+            ? cities.filter(c => c.name.trim()).map(c => ({ name: c.name.trim(), days: c.days }))
+            : undefined,
           vibe,
           arrivalTime: arrivalTime || undefined,
           departureTime: departureTime || undefined,
@@ -1362,13 +1373,13 @@ export default function Home() {
                 value={agentInput}
                 onChange={e => setAgentInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAgentSend() } }}
-                placeholder={destination.trim() ? 'Describe your ideal trip...' : 'Set a destination above first'}
-                disabled={!destination.trim() || agentLoading}
+                placeholder={(tripMode === 'multi' ? cities.some(c => c.name.trim()) : destination.trim()) ? 'Describe your ideal trip...' : 'Set a destination above first'}
+                disabled={(tripMode === 'multi' ? !cities.some(c => c.name.trim()) : !destination.trim()) || agentLoading}
                 className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0] disabled:opacity-50"
               />
               <button
                 onClick={() => handleAgentSend()}
-                disabled={!agentInput.trim() || !destination.trim() || agentLoading}
+                disabled={!agentInput.trim() || (tripMode === 'multi' ? !cities.some(c => c.name.trim()) : !destination.trim()) || agentLoading}
                 className="text-xs px-4 py-1.5 bg-[#C17B4E] text-white rounded-lg hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Send

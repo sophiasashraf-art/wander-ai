@@ -25,7 +25,7 @@ async function geocodePlace(name: string, destination: string): Promise<any> {
 
 export async function POST(req: Request) {
   try {
-    const { messages, destination, duration, vibe, arrivalTime, departureTime } = await req.json()
+    const { messages, destination, duration, vibe, arrivalTime, departureTime, cities } = await req.json()
 
     const stopsPerDay = vibe === 'relaxed' ? 3 : vibe === 'everything' ? 6 : 4
     const numDays = parseInt(duration) || 3
@@ -34,7 +34,19 @@ export async function POST(req: Request) {
     if (arrivalTime) timeConstraints += `\nDay 1: Traveler arrives at ${arrivalTime}. Don't schedule before this.`
     if (departureTime) timeConstraints += `\nDay ${numDays}: Traveler departs at ${departureTime}. Don't schedule at or after this.`
 
-    const systemPrompt = `You are a friendly, knowledgeable travel planner helping someone plan a trip to ${destination} for ${numDays} days (${stopsPerDay} stops/day, ${vibe} pace).
+    let tripDescription = ''
+    if (cities?.length > 0) {
+      const cityBreakdown = cities.map((c: any) => `${c.name} (${c.days} days)`).join(', then ')
+      tripDescription = `a multi-city trip: ${cityBreakdown} — ${numDays} days total`
+    } else {
+      tripDescription = `a trip to ${destination} for ${numDays} days`
+    }
+
+    const cityRules = cities?.length > 0
+      ? `\n- This is a MULTI-CITY trip. You MUST create days for EVERY city in order:\n${cities.map((c: any, i: number) => `  ${c.name}: ${c.days} day(s)`).join('\n')}\n- Total: ${numDays} days. Assign days sequentially (e.g. if Tokyo=2, Kyoto=3: Days 1-2 are Tokyo, Days 3-5 are Kyoto)\n- Title each day with the city name`
+      : ''
+
+    const systemPrompt = `You are a friendly, knowledgeable travel planner helping someone plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
 ${timeConstraints}
 
 Your job:
@@ -61,12 +73,12 @@ When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`js
 }
 
 Rules for the itinerary:
-- ONLY suggest real, well-known places that actually exist in ${destination}
+- ONLY suggest real, well-known places that actually exist
 - Use the exact real name of each place (as it appears on Google Maps)
 - Assign times based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
 - Group nearby places on the same day
-- ${numDays} days, ${stopsPerDay} stops per day
-- Every stop must have "suggested": true
+- ${numDays} days total, ${stopsPerDay} stops per day
+- Every stop must have "suggested": true${cityRules}
 
 Before the JSON, write a brief friendly summary of the plan. After the JSON, ask if they want to change anything.`
 
