@@ -269,6 +269,13 @@ export default function Home() {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
+  // Register service worker for PWA
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
+  }, [])
+
   // Build empty day shells for manual building
   function buildEmptyDays(numDays: number): Day[] {
     return Array.from({ length: numDays }, (_, i) => ({
