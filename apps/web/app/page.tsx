@@ -7,6 +7,8 @@ import ItineraryEditor, { Day, recalcTimes } from './components/ItineraryEditor'
 import TripsSidebar from './components/TripsSidebar'
 import AddMorePlaces from './components/AddMorePlaces'
 import PlaceSearch from './components/PlaceSearch'
+import CityAutocomplete from './components/CityAutocomplete'
+import DurationSpinner from './components/DurationSpinner'
 
 // ── Share dropdown ──
 function ShareButton({ onShare }: { onShare: (viewOnly: boolean) => void }) {
@@ -1036,7 +1038,12 @@ export default function Home() {
             📍 Single destination
           </button>
           <button
-            onClick={() => setTripMode('multi')}
+            onClick={() => {
+              setTripMode('multi')
+              if (destination.trim() && cities[0]?.name === '') {
+                setCities(prev => [{ name: destination.trim(), days: duration || 2 }, ...prev.slice(1)])
+              }
+            }}
             className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-all ${tripMode === 'multi' ? 'border-[#C17B4E] bg-[#FEF8F4] text-[#C17B4E]' : 'border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E]'}`}
           >
             🗺️ Multi-city / Road trip
@@ -1050,29 +1057,18 @@ export default function Home() {
             <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
               Destination
             </label>
-            <input
-              type="text"
-              className="w-full bg-transparent outline-none text-[#2C2416] text-sm placeholder:text-[#8C8070]"
-              placeholder="San Diego, Lisbon, Tokyo..."
+            <CityAutocomplete
               value={destination}
-              onChange={e => setDestination(e.target.value)}
+              onChange={setDestination}
+              placeholder="San Diego, Lisbon, Tokyo..."
+              className="w-full bg-transparent outline-none text-[#2C2416] text-sm placeholder:text-[#8C8070]"
             />
           </div>
           <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 focus-within:border-[#C17B4E] transition-colors">
             <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
               Duration
             </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={30}
-                className="w-16 bg-transparent outline-none text-[#2C2416] text-sm"
-                value={duration}
-                onChange={e => setDuration(Number(e.target.value))}
-              />
-              <span className="text-sm text-[#8C8070]">days</span>
-            </div>
+            <DurationSpinner value={duration} onChange={setDuration} />
           </div>
         </div>
         )}
@@ -1087,22 +1083,18 @@ export default function Home() {
             {cities.map((city, i) => (
               <div key={i} className="flex items-center gap-2">
                 <span className="text-xs text-[#C8BFB0] w-4 shrink-0">{i + 1}.</span>
-                <input
-                  type="text"
-                  placeholder="City or country..."
+                <CityAutocomplete
                   value={city.name}
-                  onChange={e => setCities(prev => prev.map((c, j) => j === i ? { ...c, name: e.target.value } : c))}
+                  onChange={v => setCities(prev => prev.map((c, j) => j === i ? { ...c, name: v } : c))}
+                  placeholder="City or country..."
                   className="flex-1 bg-[#FDFAF5] border border-[#E8DFD0] rounded-xl px-3 py-2 text-sm text-[#2C2416] outline-none focus:border-[#C17B4E] transition-colors placeholder:text-[#C8BFB0]"
                 />
-                <input
-                  type="number"
+                <DurationSpinner
+                  value={city.days}
+                  onChange={v => setCities(prev => prev.map((c, j) => j === i ? { ...c, days: v } : c))}
                   min={1}
                   max={14}
-                  value={city.days}
-                  onChange={e => setCities(prev => prev.map((c, j) => j === i ? { ...c, days: Number(e.target.value) } : c))}
-                  className="w-12 bg-[#FDFAF5] border border-[#E8DFD0] rounded-xl px-2 py-2 text-sm text-[#2C2416] outline-none focus:border-[#C17B4E] transition-colors text-center"
                 />
-                <span className="text-xs text-[#8C8070] shrink-0">days</span>
                 {cities.length > 1 && (
                   <button
                     onClick={() => setCities(prev => prev.filter((_, j) => j !== i))}
