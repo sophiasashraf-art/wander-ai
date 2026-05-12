@@ -268,6 +268,7 @@ export default function Home() {
   const [agentInput, setAgentInput] = useState('')
   const [agentLoading, setAgentLoading] = useState(false)
   const agentChatRef = useRef<HTMLDivElement>(null)
+  const [showSettings, setShowSettings] = useState(false)
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -995,7 +996,7 @@ export default function Home() {
   const unscheduledPlaces = places.filter(p => !scheduledNames.has(p.name))
 
   return (
-    <main className="min-h-screen bg-[#FDFAF5] flex flex-col items-center p-8 pt-16">
+    <main className="min-h-screen bg-gradient-subtle flex flex-col items-center px-6 py-12 pt-20">
 
       {/* Trips sidebar */}
       <TripsSidebar
@@ -1010,18 +1011,18 @@ export default function Home() {
       {/* Hamburger */}
       <button
         onClick={() => setSidebarOpen(true)}
-        className="fixed top-5 left-5 z-30 flex flex-col gap-1.5 p-2 rounded-xl hover:bg-[#F5F0E8] transition-colors"
+        className="fixed top-5 left-5 z-30 flex flex-col gap-1.5 p-2.5 rounded-xl hover:bg-white/60 hover:shadow-sm transition-all"
         aria-label="Open trips"
       >
-        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
-        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
-        <span className="w-5 h-0.5 bg-[#8C8070] rounded" />
+        <span className="w-5 h-0.5 bg-[#6B6B6B] rounded" />
+        <span className="w-5 h-0.5 bg-[#6B6B6B] rounded" />
+        <span className="w-5 h-0.5 bg-[#6B6B6B] rounded" />
       </button>
 
-      <h1 className="font-serif text-4xl text-[#2C2416] mb-2">
-        mapture<span className="text-[#C17B4E]">.</span>
+      <h1 className="text-4xl font-semibold tracking-tight text-[#1A1A1A] mb-1.5">
+        mapture<span className="text-[#E07A4C]">.</span>
       </h1>
-      <p className="text-[#8C8070] text-lg mb-12">
+      <p className="text-[#6B6B6B] text-base mb-14">
         Turn all your travel finds into a trip
       </p>
 
@@ -1030,10 +1031,10 @@ export default function Home() {
       <div className="w-full max-w-2xl">
 
         {/* Trip mode toggle */}
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-4">
           <button
             onClick={() => setTripMode('single')}
-            className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-all ${tripMode === 'single' ? 'border-[#C17B4E] bg-[#FEF8F4] text-[#C17B4E]' : 'border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E]'}`}
+            className={`flex-1 py-2.5 rounded-xl text-xs font-medium border transition-all ${tripMode === 'single' ? 'border-[#E07A4C] bg-[#FFF4EF] text-[#E07A4C] shadow-sm' : 'border-[rgba(0,0,0,0.06)] text-[#6B6B6B] hover:border-[#E07A4C]/40 hover:text-[#E07A4C]'}`}
           >
             📍 Single destination
           </button>
@@ -1044,7 +1045,7 @@ export default function Home() {
                 setCities(prev => [{ name: destination.trim(), days: duration || 2 }, ...prev.slice(1)])
               }
             }}
-            className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-all ${tripMode === 'multi' ? 'border-[#C17B4E] bg-[#FEF8F4] text-[#C17B4E]' : 'border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E]'}`}
+            className={`flex-1 py-2.5 rounded-xl text-xs font-medium border transition-all ${tripMode === 'multi' ? 'border-[#E07A4C] bg-[#FFF4EF] text-[#E07A4C] shadow-sm' : 'border-[rgba(0,0,0,0.06)] text-[#6B6B6B] hover:border-[#E07A4C]/40 hover:text-[#E07A4C]'}`}
           >
             🗺️ Multi-city / Road trip
           </button>
@@ -1052,20 +1053,20 @@ export default function Home() {
 
         {/* Destination + Duration */}
         {tripMode === 'single' && (
-        <div className="grid grid-cols-2 gap-3 mb-3">
-          <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 focus-within:border-[#C17B4E] transition-colors">
-            <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="glass-card p-4 focus-within:border-[#E07A4C]/30">
+            <label className="block text-[10px] font-semibold text-[#E07A4C] uppercase tracking-widest mb-2">
               Destination
             </label>
             <CityAutocomplete
               value={destination}
               onChange={setDestination}
               placeholder="San Diego, Lisbon, Tokyo..."
-              className="w-full bg-transparent outline-none text-[#2C2416] text-sm placeholder:text-[#8C8070]"
+              className="w-full bg-transparent outline-none text-[#1A1A1A] text-sm placeholder:text-[#A3A3A3]"
             />
           </div>
-          <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 focus-within:border-[#C17B4E] transition-colors">
-            <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
+          <div className="glass-card p-4 focus-within:border-[#E07A4C]/30">
+            <label className="block text-[10px] font-semibold text-[#E07A4C] uppercase tracking-widest mb-2">
               Duration
             </label>
             <DurationSpinner value={duration} onChange={setDuration} />
@@ -1150,14 +1151,14 @@ export default function Home() {
         </>}
 
         {/* Vibe selector */}
-        <div className="bg-white border border-[#E8DFD0] rounded-2xl p-4 mb-3 focus-within:border-[#C17B4E] transition-colors">
-          <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-2">
+        <div className="glass-card p-4 mb-4 focus-within:border-[#E07A4C]/30">
+          <label className="block text-[10px] font-semibold text-[#E07A4C] uppercase tracking-widest mb-2">
             Travel style
           </label>
           <select
             value={vibe}
             onChange={e => setVibe(e.target.value as any)}
-            className="w-full bg-transparent outline-none text-sm text-[#2C2416] cursor-pointer"
+            className="w-full bg-transparent outline-none text-sm text-[#1A1A1A] cursor-pointer"
           >
             <option value="relaxed">🌿 Slow &amp; relaxed — 2-3 stops/day</option>
             <option value="balanced">⚖️ Balanced — 4 stops/day</option>
@@ -1167,42 +1168,42 @@ export default function Home() {
 
         {/* Mode picker */}
         {mounted && (
-          <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="grid grid-cols-3 gap-3 mb-5">
             <button
               onClick={() => setBuildMode('ai')}
               className={`p-4 rounded-2xl border text-left transition-all ${
                 buildMode === 'ai'
-                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
-                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
+                  ? 'border-[#E07A4C]/40 bg-[#FFF4EF] shadow-sm'
+                  : 'glass-card hover:border-[#E07A4C]/30'
               }`}
             >
-              <div className="text-xl mb-1">✨</div>
-              <div className="text-xs font-medium text-[#2C2416]">From your saves</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">Paste links, notes, or screenshots. We'll organize it</div>
+              <div className="text-xl mb-1.5">✨</div>
+              <div className="text-xs font-semibold text-[#1A1A1A]">From your saves</div>
+              <div className="text-[11px] text-[#6B6B6B] mt-0.5 leading-relaxed">Paste links, notes, or screenshots</div>
             </button>
             <button
               onClick={() => setBuildMode('build')}
               className={`p-4 rounded-2xl border text-left transition-all ${
                 buildMode === 'build'
-                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
-                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
+                  ? 'border-[#E07A4C]/40 bg-[#FFF4EF] shadow-sm'
+                  : 'glass-card hover:border-[#E07A4C]/30'
               }`}
             >
-              <div className="text-xl mb-1">🗓️</div>
-              <div className="text-xs font-medium text-[#2C2416]">Plan it myself</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">Add places day by day</div>
+              <div className="text-xl mb-1.5">🗓️</div>
+              <div className="text-xs font-semibold text-[#1A1A1A]">Plan it myself</div>
+              <div className="text-[11px] text-[#6B6B6B] mt-0.5 leading-relaxed">Add places day by day</div>
             </button>
             <button
               onClick={() => setBuildMode('agent')}
               className={`p-4 rounded-2xl border text-left transition-all ${
                 buildMode === 'agent'
-                  ? 'border-[#C17B4E] bg-[#FEF8F4]'
-                  : 'border-[#E8DFD0] bg-white hover:border-[#C17B4E]'
+                  ? 'border-[#E07A4C]/40 bg-[#FFF4EF] shadow-sm'
+                  : 'glass-card hover:border-[#E07A4C]/30'
               }`}
             >
-              <div className="text-xl mb-1">🤖</div>
-              <div className="text-xs font-medium text-[#2C2416]">Explore ideas</div>
-              <div className="text-xs text-[#8C8070] mt-0.5">Chat to get ideas and build your trip</div>
+              <div className="text-xl mb-1.5">🤖</div>
+              <div className="text-xs font-semibold text-[#1A1A1A]">Explore ideas</div>
+              <div className="text-[11px] text-[#6B6B6B] mt-0.5 leading-relaxed">Chat to build your trip</div>
             </button>
           </div>
         )}
@@ -1269,7 +1270,7 @@ export default function Home() {
           <button
             onClick={handleExtract}
             disabled={loading || (!input.trim() && places.length === 0) || (tripMode === 'single' ? !destination.trim() : !cities.some(c => c.name.trim()))}
-            className="w-full py-4 bg-[#C17B4E] text-white rounded-xl font-medium text-sm hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-4 btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
           >
             {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary →' : 'Extract & generate →'}
           </button>
@@ -1573,23 +1574,58 @@ export default function Home() {
           {/* Map — per-city for multi-city trips, single map otherwise */}
           {mapMarkers.length > 0 && (() => {
             const isMultiCity = destination.includes('→') || editableDays.some((d: any) => d.city)
+
+            const MarkerPin = ({ marker }: { marker: any }) => (
+              <div style={{
+                background: 'rgba(255,255,255,0.92)',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                borderRadius: '20px',
+                padding: '5px 10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                fontWeight: 600,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                maxWidth: 180,
+                color: '#1A1A1A',
+              }}>
+                <span style={{
+                  background: marker.color,
+                  borderRadius: '50%',
+                  width: 18,
+                  height: 18,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  fontSize: 10,
+                  color: 'white',
+                  fontWeight: 700,
+                }}>{marker.day}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{marker.name}</span>
+              </div>
+            )
+
             if (!isMultiCity) {
               return (
-                <div className="rounded-2xl overflow-hidden mb-8 h-80 border border-[#E8DFD0]">
+                <div className="map-container mb-8 h-80">
                   <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
                     <Map
                       defaultCenter={mapCenter}
                       defaultZoom={12}
                       mapId="mapture-map"
                       gestureHandling="greedy"
-                      disableDefaultUI={false}
+                      disableDefaultUI
+                      zoomControl
+                      style={{ width: '100%', height: '100%' }}
                     >
                       {mapMarkers.map((marker: any, i: number) => (
                         <AdvancedMarker key={i} position={{ lat: marker.lat, lng: marker.lng }} title={marker.name}>
-                          <div style={{ background: marker.color, border: '2px solid white', borderRadius: '20px', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4, color: 'white', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)', cursor: 'pointer', whiteSpace: 'nowrap', maxWidth: 160 }}>
-                            <span style={{ background: 'rgba(255,255,255,0.3)', borderRadius: '50%', width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 10 }}>{marker.day}</span>
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{marker.name}</span>
-                          </div>
+                          <MarkerPin marker={marker} />
                         </AdvancedMarker>
                       ))}
                     </Map>
@@ -1613,7 +1649,7 @@ export default function Home() {
 
             return (
               <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
-                <div className="flex flex-col gap-4 mb-8">
+                <div className="flex flex-col gap-5 mb-8">
                   {Object.entries(cityGroups).filter(([, g]) => g.markers.length > 0).map(([city, group]) => {
                     const lats = group.markers.map(m => m.lat)
                     const lngs = group.markers.map(m => m.lng)
@@ -1623,21 +1659,20 @@ export default function Home() {
                     const zoom = spread < 0.02 ? 14 : spread < 0.1 ? 13 : spread < 0.5 ? 12 : 11
                     return (
                       <div key={city}>
-                        <p className="text-xs font-medium text-[#8C8070] uppercase tracking-widest mb-2">{city}</p>
-                        <div className="rounded-2xl overflow-hidden h-56 border border-[#E8DFD0]">
+                        <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-widest mb-2">{city}</p>
+                        <div className="map-container h-56">
                           <Map
                             defaultCenter={{ lat: centerLat, lng: centerLng }}
                             defaultZoom={zoom}
                             mapId={`mapture-map-${city.replace(/\s+/g, '-').toLowerCase()}`}
                             gestureHandling="greedy"
-                            disableDefaultUI={false}
+                            disableDefaultUI
+                            zoomControl
+                            style={{ width: '100%', height: '100%' }}
                           >
                             {group.markers.map((marker: any, i: number) => (
                               <AdvancedMarker key={i} position={{ lat: marker.lat, lng: marker.lng }} title={marker.name}>
-                                <div style={{ background: marker.color, border: '2px solid white', borderRadius: '20px', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4, color: 'white', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)', cursor: 'pointer', whiteSpace: 'nowrap', maxWidth: 160 }}>
-                                  <span style={{ background: 'rgba(255,255,255,0.3)', borderRadius: '50%', width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 10 }}>{marker.day}</span>
-                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{marker.name}</span>
-                                </div>
+                                <MarkerPin marker={marker} />
                               </AdvancedMarker>
                             ))}
                           </Map>
