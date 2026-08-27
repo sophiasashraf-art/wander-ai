@@ -73,7 +73,18 @@ export async function POST(req: Request) {
       model: 'gpt-4o-mini',
       messages: [{
         role: 'system',
-        content: 'You are a travel assistant. Extract all specific places, restaurants, cafes, activities, and locations from the user\'s travel inspiration. Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "category": "restaurant|activity|neighborhood|stay|cafe|other", "city": "...", "description": "..."}]}',
+        content: `You are a travel assistant. Extract all specific places, restaurants, cafes, activities, and locations from the user's travel inspiration.
+
+For each place, also capture the context around why it was saved — this is important, don't skip it:
+- tip: practical advice mentioned in the content (e.g. "arrive before 10am, there's a line", "cash only", "book ahead"). Omit if none is mentioned.
+- why_recommended: what makes it stand out per the content — vibe, standout dish, unique feature (e.g. "unique cocktails, intimate setting", "best matcha in the city"). Omit if the content gives no real reason.
+
+Don't invent tips or reasons that aren't supported by the content — omit the field rather than guess.
+
+Category must be one of: restaurant | bar | activity | neighborhood | stay | cafe | other
+- Use "bar" for cocktail bars, pubs, lounges, clubs, and nightlife venues — not "activity".
+
+Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "category": "restaurant|bar|activity|neighborhood|stay|cafe|other", "city": "...", "description": "...", "tip": "...", "why_recommended": "..."}]}`,
       }, {
         role: 'user',
         content: enrichedText,
@@ -82,6 +93,10 @@ export async function POST(req: Request) {
     })
 
     const result = JSON.parse(response.choices[0].message.content || '{"places":[]}')
+    const sourceUrl = urls.length === 1 ? urls[0] : undefined
+    if (sourceUrl) {
+      result.places = result.places.map((p: any) => ({ ...p, source_url: sourceUrl }))
+    }
 
     // Enrich all places with real coordinates from Google Places
     // Get destination from the trip if available
@@ -119,7 +134,7 @@ if (tripId && enrichedPlaces.length > 0) {
     const { error: insertError } = await supabase.from('places').insert(
       newPlaces.map((p: any) => ({ ...p, trip_id: tripId }))
     )
-    console.log('insertError:', insertError)
+    if (insertError) console.error('places insert failed:', insertError)
   }
 }
 

@@ -15,7 +15,7 @@ export default function DurationSpinner({ value, onChange, min = 1, max = 30, la
         type="button"
         onClick={() => onChange(Math.max(min, value - 1))}
         disabled={value <= min}
-        className="w-7 h-7 flex items-center justify-center rounded-lg border border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E] hover:text-[#C17B4E] transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium"
+        className="w-7 h-7 flex items-center justify-center rounded-lg border border-[#E5E5E5] text-[#6B6B6B] hover:border-[#3D5AFE] hover:text-[#3D5AFE] transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium"
       >
         −
       </button>
@@ -28,17 +28,17 @@ export default function DurationSpinner({ value, onChange, min = 1, max = 30, la
           const n = Number(e.target.value)
           if (n >= min && n <= max) onChange(n)
         }}
-        className="w-10 bg-transparent outline-none text-[#2C2416] text-sm text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        className="w-10 bg-transparent outline-none text-[#0A0A0A] text-sm text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
       />
       <button
         type="button"
         onClick={() => onChange(Math.min(max, value + 1))}
         disabled={value >= max}
-        className="w-7 h-7 flex items-center justify-center rounded-lg border border-[#E8DFD0] text-[#8C8070] hover:border-[#C17B4E] hover:text-[#C17B4E] transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium"
+        className="w-7 h-7 flex items-center justify-center rounded-lg border border-[#E5E5E5] text-[#6B6B6B] hover:border-[#3D5AFE] hover:text-[#3D5AFE] transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium"
       >
         +
       </button>
-      <span className="text-sm text-[#8C8070]">{label}</span>
+      <span className="text-sm text-[#6B6B6B]">{label}</span>
     </div>
   )
 }

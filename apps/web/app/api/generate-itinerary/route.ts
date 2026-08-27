@@ -303,25 +303,31 @@ Return all ${numDays} days with times and titles.`,
       return { day: dayNum, title: gptDay?.title || `Day ${dayNum}`, stops }
     })
 
-    // ── Step 4: Fill thin days with suggestions ──
-    const thinDays = finalDays.filter((d: any) => d.stops.length < 2)
+    // ── Step 4: Fill thin days, and days missing an evening stop, with suggestions ──
+    // days needing MORE stops overall, plus days that have stops but none in the evening
+    const daysNeedingEvening = finalDays.filter((d: any) =>
+      d.stops.length > 0 && !d.stops.some((s: any) => parseMin(s.time) >= 17 * 60)
+    )
+    const thinDays = finalDays.filter((d: any) =>
+      d.stops.length < 2 || daysNeedingEvening.some((e: any) => e.day === d.day)
+    )
     if (thinDays.length > 0) {
       const step2Res = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
-          content: `Fill thin days with real, well-known suggested places in the destination. Mark each with "suggested": true. Aim for ${config.stopsPerDay} stops per day. Return only the days that need filling.`,
+          content: `Suggest ADDITIONAL real, well-known places in the destination to round out the given days. Mark each with "suggested": true. Aim for ${config.stopsPerDay} total stops per day (existing + new). If a day has no evening (7-9 PM) stop, include one dinner or bar suggestion timed accordingly. Return ONLY the new stops to add for each day — do not repeat the existing stops back.`,
         }, {
           role: 'user',
-          content: `Destination: ${trip?.destination}. Add suggestions to reach ${config.stopsPerDay} stops/day.
+          content: `Destination: ${trip?.destination}.
 
-Days needing suggestions:
-${JSON.stringify(thinDays, null, 2)}
+Days and their existing stops:
+${JSON.stringify(thinDays.map((d: any) => ({ day: d.day, existingStops: d.stops.map((s: any) => ({ name: s.name, time: s.time, category: s.category })) })), null, 2)}
 
-Already scheduled (don't repeat):
+Already scheduled anywhere in the trip (don't repeat these):
 ${JSON.stringify(finalDays.flatMap((d: any) => d.stops.map((s: any) => s.name)), null, 2)}
 
-Return JSON: {"days": [...]}`,
+Return JSON: {"days": [{"day": 1, "stops": [{"time": "7:00 PM", "name": "...", "category": "...", "note": "...", "suggested": true}]}]}`,
         }],
         response_format: { type: 'json_object' },
       })
@@ -329,7 +335,10 @@ Return JSON: {"days": [...]}`,
       const step2 = JSON.parse(step2Res.choices[0].message.content || '{"days":[]}')
       step2.days?.forEach((filled: any) => {
         const idx = finalDays.findIndex((d: any) => d.day === filled.day)
-        if (idx !== -1) finalDays[idx] = filled
+        if (idx === -1) return
+        const existingNames = new Set(finalDays[idx].stops.map((s: any) => s.name.toLowerCase().trim()))
+        const newStops = (filled.stops || []).filter((s: any) => !existingNames.has((s.name || '').toLowerCase().trim()))
+        finalDays[idx] = { ...finalDays[idx], stops: [...finalDays[idx].stops, ...newStops] }
       })
     }
 
@@ -354,6 +363,18 @@ Return JSON: {"days": [...]}`,
           } : {}),
         }
       })
+      // If nothing is scheduled in the evening but a restaurant/bar is available,
+      // anchor it to its category's evening default rather than trusting a GPT time
+      // that technically passed the wide window check but isn't actually a dinner slot.
+      const hasEveningStop = stops.some((s: any) => parseMin(s.time) >= 17 * 60)
+      if (!hasEveningStop) {
+        const anchorIdx = stops.findIndex((s: any) => ['restaurant', 'bar'].includes((s.category || '').toLowerCase()))
+        if (anchorIdx !== -1) {
+          const cat = stops[anchorIdx].category.toLowerCase()
+          stops[anchorIdx] = { ...stops[anchorIdx], time: fmtHour(defaultHour(cat)) }
+        }
+      }
+
       stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
 
       for (let i = 1; i < stops.length; i++) {

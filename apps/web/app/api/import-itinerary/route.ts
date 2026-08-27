@@ -9,9 +9,10 @@ const maps = new Client()
 async function enrichWithCoordinates(place: any, destination: string): Promise<any> {
   try {
     // Step 1: find the place to get a place_id
+    const locationHint = place.city || destination
     const findRes = await maps.findPlaceFromText({
       params: {
-        input: `${place.name} ${destination}`,
+        input: `${place.name} ${locationHint}`,
         inputtype: 'textquery' as any,
         fields: ['place_id', 'geometry', 'name'] as any,
         key: process.env.GOOGLE_PLACES_API_KEY!,
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
       messages: [{
         role: 'system',
         content: `You are a travel assistant. Parse the provided itinerary text into a structured format.
-
+${destination ? '' : '\nThe destination is not known yet — you MUST infer the city for each stop from context (place names, landmarks, neighborhoods mentioned). This is required.\n'}
 The trip is ${numDays} days long. You MUST return exactly ${numDays} days.
 - If the user's text only covers some days, create the remaining days as empty (with an empty stops array and a generic title like "Day 3").
 - If the user's text has more days than ${numDays}, combine the extra days into the last day.
@@ -77,10 +78,14 @@ Extract each day with its stops. For each stop include:
 - The exact time if mentioned by the user (e.g. "1:15 PM", "5:00 PM", "9pm" → "9:00 PM"). PRESERVE the user's times exactly — do not change or round them.
 - If NO time is mentioned for a stop, assign a reasonable time based on the activity type (cafes in morning, restaurants at meal times, bars in evening, etc.)
 - The place/activity name (restaurant, attraction, hotel, etc.)
+- The city this stop is in (infer from context if not explicit)
 - A short note if there are specific details
-- Category: restaurant | activity | stay | cafe | travel | personal | other
+- tip: practical advice mentioned in the text (e.g. "arrive before 10am, there's a line", "cash only"). Omit if none is mentioned — don't invent one.
+- why_recommended: what makes it stand out per the text — vibe, standout dish, unique feature. Omit if the text gives no real reason.
+- Category: restaurant | bar | activity | stay | cafe | travel | personal | other
   - Use "personal" for logistical or social events that are NOT a real venue: arrivals ("Bram lands"), pickups ("Pick up Idil"), people arriving ("Jill and Alina come in"), etc.
   - Use "travel" only for flights/transit stops
+  - Use "bar" for cocktail bars, pubs, lounges, clubs, and nightlife venues — not "activity"
   - Use the other categories for real places/venues
 - geocodable: true ONLY if this is a specific named venue/place with a real address that can be found on Google Maps.
   Set geocodable: false for:
@@ -93,9 +98,15 @@ Extract each day with its stops. For each stop include:
 
 If day names (friday, saturday, etc.) or dates are mentioned, use them as day titles and extract the start date if possible (YYYY-MM-DD format).
 
+Also return a top-level boolean "userProvidedStructure":
+- true if the user's text explicitly assigned stops to days and/or gave real times/sequencing (day names, "Day 1", "morning", explicit clock times, ordered lists implying sequence)
+- false if it's just a flat list of places/activities with no day or time cues at all, and you had to invent which day/time each one goes in yourself
+This must reflect what the USER wrote, not what you assigned — if you had to guess the schedule, it's false even though your output now has times and days filled in.
+
 Return valid JSON only:
 {
   "startDate": "2024-09-12",
+  "userProvidedStructure": true,
   "days": [
     {
       "day": 1,
@@ -104,13 +115,17 @@ Return valid JSON only:
         {
           "time": "1:15 PM",
           "name": "Solidcore Midtown",
+          "city": "New York",
           "category": "activity",
           "note": "",
+          "tip": "book ahead, classes fill up",
+          "why_recommended": "",
           "geocodable": true
         },
         {
           "time": "6:00 PM",
           "name": "Bram lands",
+          "city": "New York",
           "category": "personal",
           "note": "",
           "geocodable": false
@@ -131,7 +146,7 @@ Return valid JSON only:
 
     // Extract unique place names for coordinate enrichment
     const allPlaces = parsed.days?.flatMap((d: any) =>
-      d.stops.map((s: any) => ({ name: s.name, category: s.category, geocodable: s.geocodable }))
+      d.stops.map((s: any) => ({ name: s.name, category: s.category, geocodable: s.geocodable, city: s.city, tip: s.tip, why_recommended: s.why_recommended }))
     ) || []
 
     // Filter out personal/logistical events that aren't real geocodable places.
@@ -202,7 +217,7 @@ Return valid JSON only:
         .map((p: any) => ({
           name: p.name,
           category: p.category,
-          city: destination,
+          city: p.city || destination,
           description: p.address || '',
           lat: p.lat,
           lng: p.lng,
@@ -211,6 +226,8 @@ Return valid JSON only:
           photo_reference: p.photo_reference || null,
           rating: p.rating || null,
           price_level: p.price_level ?? null,
+          tip: p.tip || null,
+          why_recommended: p.why_recommended || null,
         }))
 
       if (placesToInsert.length > 0) {
@@ -224,7 +241,8 @@ Return valid JSON only:
           (p: any) => !existingNames.has(p.name.toLowerCase())
         )
         if (newPlaces.length > 0) {
-          await supabase.from('places').insert(newPlaces)
+          const { error: insertError } = await supabase.from('places').insert(newPlaces)
+          if (insertError) console.error('places insert failed:', insertError)
         }
       }
     }
@@ -385,6 +403,7 @@ Return valid JSON only:
       return NextResponse.json({
         days: redistributed,
         redistributed: true,
+        userProvidedStructure: false,
         startDate: parsed.startDate || null,
         places: enriched,
       })
@@ -392,6 +411,7 @@ Return valid JSON only:
 
     return NextResponse.json({
       days: daysWithCoords,
+      userProvidedStructure: parsed.userProvidedStructure ?? false,
       startDate: parsed.startDate || null,
       places: enriched,
     })

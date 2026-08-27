@@ -351,7 +351,10 @@ Return all ${totalDays} days.`,
             rating: p.rating || null,
             price_level: p.price_level ?? null,
           }))
-        if (toInsert.length > 0) await supabase.from('places').insert(toInsert)
+        if (toInsert.length > 0) {
+          const { error: insertError } = await supabase.from('places').insert(toInsert)
+          if (insertError) console.error('places insert failed:', insertError)
+        }
       }
       await supabase.from('trips').update({ itinerary: { days: enrichedDays } }).eq('id', tripId)
     }

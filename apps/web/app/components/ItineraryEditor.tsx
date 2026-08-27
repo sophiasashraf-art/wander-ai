@@ -4,14 +4,16 @@ import { useState, useEffect, useRef } from 'react'
 import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon } from 'lucide-react'
 
-const DAY_COLORS = ['#C17B4E', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
+const DAY_COLORS = ['#3D5AFE', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
 export interface Stop {
   id: string; time: string; manualTime?: boolean
   name: string; category: string; note?: string; suggested?: boolean
   lat?: number; lng?: number; opening_hours?: string[]
   photo_reference?: string; rating?: number; price_level?: number; address?: string
+  tip?: string; why_recommended?: string; source_url?: string
 }
 
 export interface Day {
@@ -21,6 +23,9 @@ export interface Day {
 interface Props {
   days: Day[]; onChange: (days: Day[]) => void
   startDate?: string; viewOnly?: boolean; destination?: string
+  onHoverStop?: (stopId: string | null) => void
+  highlightedStopId?: string | null
+  layout?: 'stack' | 'carousel'
 }
 
 // Parse time from text like "beach 9am" → { name: "beach", time: "9:00 AM" }
@@ -86,7 +91,7 @@ function formatHoursShort(line: string): string {
 
 function GripIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-[#C8BFB0]">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-[#A3A3A3]">
       <circle cx="4" cy="3" r="1.2" fill="currentColor" />
       <circle cx="10" cy="3" r="1.2" fill="currentColor" />
       <circle cx="4" cy="7" r="1.2" fill="currentColor" />
@@ -97,11 +102,12 @@ function GripIcon() {
   )
 }
 
-function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameChange, viewOnly = false, destination = '' }: {
+function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameChange, viewOnly = false, destination = '', onHoverStop, highlighted = false }: {
   stop: Stop; dayColor: string; onDelete: () => void
   onTimeChange: (time: string) => void; onNoteChange: (note: string) => void
   onNameChange: (name: string) => void
-  viewOnly?: boolean; destination?: string
+  viewOnly?: boolean; destination?: string; onHoverStop?: (stopId: string | null) => void
+  highlighted?: boolean
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: stop.id })
   const [editing, setEditing] = useState(false)
@@ -113,7 +119,14 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }
 
   return (
-    <div ref={setNodeRef} style={style} className="flex gap-3 px-4 py-3 items-start group border-b border-[#F5F0E8] last:border-0 bg-white">
+    <div
+      id={`stop-${stop.id}`}
+      ref={setNodeRef}
+      style={{ ...style, background: highlighted ? `${dayColor}14` : undefined, boxShadow: highlighted ? `inset 3px 0 0 ${dayColor}` : undefined }}
+      className="flex gap-3 px-4 py-3 items-start group border-b border-[#EFEFEF] last:border-0 bg-white transition-colors duration-300"
+      onMouseEnter={() => onHoverStop?.(stop.id)}
+      onMouseLeave={() => onHoverStop?.(null)}
+    >
       {!viewOnly && (
         <button {...attributes} {...listeners} className="mt-1 cursor-grab active:cursor-grabbing opacity-40 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0 touch-none" aria-label="Drag to reorder">
           <GripIcon />
@@ -137,12 +150,12 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                   if (e.key === 'Escape') { setEditing(false); setError(false) }
                 }}
-                className={`text-xs w-20 border-b outline-none bg-transparent pb-0.5 ${error ? 'border-red-400 text-red-400' : 'border-[#C17B4E] text-[#C17B4E]'}`}
+                className={`text-xs w-20 border-b outline-none bg-transparent pb-0.5 ${error ? 'border-red-400 text-red-400' : 'border-[#3D5AFE] text-[#3D5AFE]'}`}
               />
               {error && <span className="text-xs text-red-400">try "9:30 AM" or "14:00"</span>}
             </div>
           ) : (
-            <button onClick={() => !viewOnly && setEditing(true)} className={`text-xs text-[#8C8070] w-14 shrink-0 text-left transition-colors ${!viewOnly ? 'hover:text-[#C17B4E] cursor-pointer' : 'cursor-default'}`}>
+            <button onClick={() => !viewOnly && setEditing(true)} className={`text-xs text-[#6B6B6B] w-14 shrink-0 text-left transition-colors ${!viewOnly ? 'hover:text-[#3D5AFE] cursor-pointer' : 'cursor-default'}`}>
               {stop.time}
             </button>
           )}
@@ -161,7 +174,7 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                   if (e.key === 'Escape') setEditingName(false)
                 }}
-                className="text-sm font-medium text-[#2C2416] w-full border-b border-[#C17B4E] outline-none bg-transparent pb-0.5"
+                className="text-sm font-medium text-[#0A0A0A] w-full border-b border-[#3D5AFE] outline-none bg-transparent pb-0.5"
               />
             ) : stop.lat && stop.lng ? (
               <button
@@ -171,16 +184,16 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
                   setShowPopup(p => !p)
                 }}
                 onDoubleClick={() => { if (!viewOnly) setEditingName(true) }}
-                className="text-sm font-medium text-[#2C2416] truncate hover:text-[#C17B4E] transition-colors text-left w-full flex items-center gap-1 group/place"
+                className="text-sm font-medium text-[#0A0A0A] truncate hover:text-[#3D5AFE] transition-colors text-left w-full flex items-center gap-1 group/place"
                 title={!viewOnly ? 'Click for details · Double-click to edit name' : 'View place details'}
               >
-                <span className="text-[#C8BFB0] group-hover/place:text-[#C17B4E] transition-colors shrink-0 text-xs">📍</span>
-                <span className="truncate" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: '#C8BFB0', textUnderlineOffset: '3px' }}>{stop.name}</span>
+                <MapPin size={11} strokeWidth={2} className="text-[#A3A3A3] group-hover/place:text-[#3D5AFE] transition-colors shrink-0" />
+                <span className="truncate" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: '#A3A3A3', textUnderlineOffset: '3px' }}>{stop.name}</span>
               </button>
             ) : (
               <p
                 onDoubleClick={() => { if (!viewOnly) setEditingName(true) }}
-                className={`text-sm font-medium text-[#2C2416] truncate ${!viewOnly ? 'cursor-text' : ''}`}
+                className={`text-sm font-medium text-[#0A0A0A] truncate ${!viewOnly ? 'cursor-text' : ''}`}
                 title={!viewOnly ? 'Double-click to edit name' : undefined}
               >
                 {stop.name}
@@ -195,17 +208,19 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
               />
             )}
           </div>
-          {stop.suggested && <span className="text-xs px-2 py-0.5 rounded-full bg-[#F5F0E8] text-[#8C8070] shrink-0">suggested</span>}
           {stop.opening_hours && (
             <button
               onClick={() => setShowPopup(p => !p)}
-              className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-[#8C8070] text-xs"
+              className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-[#6B6B6B]"
               title="Show opening hours"
             >
-              🕐
+              <Clock size={12} strokeWidth={2} />
             </button>
           )}
         </div>
+        {stop.suggested && (
+          <span className="inline-block text-xs px-2 py-0.5 mt-1 ml-16 rounded-full bg-[#EFEFEF] text-[#6B6B6B]">suggested</span>
+        )}
         {editingNote ? (
           <input autoFocus type="text" defaultValue={stop.note}
             onBlur={e => { setEditingNote(false); onNoteChange(e.target.value) }}
@@ -213,20 +228,20 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               if (e.key === 'Escape') setEditingNote(false)
             }}
-            className="text-xs text-[#8C8070] mt-0.5 ml-16 w-[calc(100%-4rem)] bg-transparent border-b border-[#C17B4E] outline-none pb-0.5"
+            className="text-xs text-[#6B6B6B] mt-0.5 ml-16 w-[calc(100%-4rem)] bg-transparent border-b border-[#3D5AFE] outline-none pb-0.5"
           />
         ) : stop.note ? (
-          <p onClick={() => !viewOnly && setEditingNote(true)} className={`text-xs text-[#8C8070] mt-0.5 leading-relaxed pl-16 ${!viewOnly ? 'cursor-pointer hover:text-[#C17B4E] transition-colors' : ''}`}>
+          <p onClick={() => !viewOnly && setEditingNote(true)} className={`text-xs text-[#6B6B6B] mt-0.5 leading-relaxed pl-16 line-clamp-2 ${!viewOnly ? 'cursor-pointer hover:text-[#3D5AFE] transition-colors' : ''}`}>
             {stop.note}
           </p>
         ) : !viewOnly ? (
-          <button onClick={() => setEditingNote(true)} className="text-xs text-[#C8BFB0] mt-0.5 ml-16 hover:text-[#8C8070] transition-colors opacity-0 group-hover:opacity-100">
+          <button onClick={() => setEditingNote(true)} className="text-xs text-[#A3A3A3] mt-0.5 ml-16 hover:text-[#6B6B6B] transition-colors opacity-0 group-hover:opacity-100">
             + add note
           </button>
         ) : null}
       </div>
       {!viewOnly && (
-        <button onClick={onDelete} className="mt-0.5 opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-[#C8BFB0] hover:text-red-400 shrink-0 text-lg leading-none" aria-label="Remove stop">×</button>
+        <button onClick={onDelete} className="mt-0.5 opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 shrink-0 text-lg leading-none" aria-label="Remove stop">×</button>
       )}
     </div>
   )
@@ -305,13 +320,13 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
-        className="fixed z-50 bg-white border border-[#E8DFD0] rounded-2xl shadow-2xl overflow-hidden"
+        className="fixed z-50 bg-white border border-[#E5E5E5] rounded-lg shadow-2xl overflow-hidden"
         style={{ left, top, width: POPUP_W }}
         onClick={e => e.stopPropagation()}
       >
         {fetchLoading ? (
-          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 100 }}>
-            <span className="text-xs text-[#C8BFB0]">Loading...</span>
+          <div className="w-full flex items-center justify-center bg-[#EFEFEF]" style={{ height: 100 }}>
+            <span className="text-xs text-[#A3A3A3]">Loading...</span>
           </div>
         ) : resolvedPhotoUrl ? (
           <img
@@ -323,31 +338,49 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
         ) : (
-          <div className="w-full flex items-center justify-center bg-[#F5F0E8]" style={{ height: 80 }}>
-            <span className="text-3xl">📍</span>
+          <div className="w-full flex items-center justify-center bg-[#EFEFEF]" style={{ height: 80 }}>
+            <MapPin size={22} strokeWidth={1.5} className="text-[#A3A3A3]" />
           </div>
         )}
         <div className="p-3">
-          <p className="text-sm font-semibold text-[#2C2416] leading-snug">{stop.name}</p>
+          <p className="text-sm font-semibold text-[#0A0A0A] leading-snug">{stop.name}</p>
           {(resolvedRating || resolvedPriceStr) && (
             <div className="flex items-center gap-2 mt-0.5">
-              {resolvedRating && <span className="text-xs text-[#8C8070]">⭐ {resolvedRating.toFixed(1)}</span>}
-              {resolvedPriceStr && <span className="text-xs text-[#8C8070]">{resolvedPriceStr}</span>}
+              {resolvedRating && <span className="flex items-center gap-0.5 text-xs text-[#6B6B6B]"><Star size={11} strokeWidth={2} className="fill-[#3D5AFE] text-[#3D5AFE]" /> {resolvedRating.toFixed(1)}</span>}
+              {resolvedPriceStr && <span className="text-xs text-[#6B6B6B]">{resolvedPriceStr}</span>}
             </div>
           )}
           {resolvedHoursLine && (
-            <p className={`text-xs mt-1 ${resolvedOutside ? 'text-amber-500 font-medium' : 'text-[#8C8070]'}`}>
-              {resolvedOutside ? '⚠️ May be closed · ' : ''}{formatHoursShort(resolvedHoursLine)}
+            <p className={`flex items-center gap-1 text-xs mt-1 ${resolvedOutside ? 'text-amber-500 font-medium' : 'text-[#6B6B6B]'}`}>
+              {resolvedOutside ? <><AlertTriangle size={11} strokeWidth={2} /> May be closed · </> : ''}{formatHoursShort(resolvedHoursLine)}
             </p>
           )}
           {resolvedAddress && (
-            <p className="text-xs text-[#C8BFB0] mt-0.5 truncate">{resolvedAddress}</p>
+            <p className="text-xs text-[#A3A3A3] mt-0.5 truncate">{resolvedAddress}</p>
+          )}
+          {stop.why_recommended && (
+            <p className="flex items-start gap-1.5 text-xs text-[#0A0A0A] mt-2 leading-relaxed">
+              <Sparkles size={12} strokeWidth={2} className="text-[#3D5AFE] shrink-0 mt-0.5" />
+              {stop.why_recommended}
+            </p>
+          )}
+          {stop.tip && (
+            <p className="flex items-start gap-1.5 text-xs text-[#6B6B6B] mt-1.5 leading-relaxed">
+              <Lightbulb size={12} strokeWidth={2} className="text-[#A3A3A3] shrink-0 mt-0.5" />
+              {stop.tip}
+            </p>
+          )}
+          {stop.source_url && (
+            <a href={stop.source_url} target="_blank" rel="noopener noreferrer"
+              className="mt-1.5 flex items-center gap-1 text-xs text-[#A3A3A3] hover:text-[#3D5AFE] truncate transition-colors">
+              <LinkIcon size={11} strokeWidth={2} /> Source
+            </a>
           )}
           <a
             href={mapsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-2.5 inline-flex items-center gap-1 text-xs text-[#C17B4E] hover:text-[#8B5330] font-medium transition-colors"
+            className="mt-2.5 inline-flex items-center gap-1 text-xs text-[#3D5AFE] hover:text-[#2E45D6] font-medium transition-colors"
           >
             Open in Google Maps ↗
           </a>
@@ -359,13 +392,13 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
 
 function DragOverlayCard({ stop, dayColor }: { stop: Stop; dayColor: string }) {
   return (
-    <div className="flex gap-3 px-4 py-3 items-start bg-white border border-[#E8DFD0] rounded-xl shadow-lg">
+    <div className="flex gap-3 px-4 py-3 items-start bg-white border border-[#E5E5E5] rounded-md shadow-lg">
       <GripIcon />
       <div className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: dayColor }} />
       <div className="flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-[#8C8070] w-14 shrink-0">{stop.time}</span>
-          <p className="text-sm font-medium text-[#2C2416]">{stop.name}</p>
+          <span className="text-xs text-[#6B6B6B] w-14 shrink-0">{stop.time}</span>
+          <p className="text-sm font-medium text-[#0A0A0A]">{stop.name}</p>
         </div>
       </div>
     </div>
@@ -446,7 +479,7 @@ function AddStopInput({ onAdd, destination }: {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="w-full text-left px-4 py-2.5 text-xs text-[#8C8070] hover:text-[#C17B4E] hover:bg-[#FEF8F4] transition-colors flex items-center gap-2">
+      <button onClick={() => setOpen(true)} className="w-full text-left px-4 py-2.5 text-xs text-[#6B6B6B] hover:text-[#3D5AFE] hover:bg-[#EEF0FF] transition-colors flex items-center gap-2">
         <span className="text-base leading-none">+</span> Add a place
       </button>
     )
@@ -454,7 +487,7 @@ function AddStopInput({ onAdd, destination }: {
 
   return (
     <div ref={wrapperRef} className="relative">
-      <div className="px-4 py-2.5 flex items-center gap-2 bg-[#FDFAF5]">
+      <div className="px-4 py-2.5 flex items-center gap-2 bg-[#FFFFFF]">
         <input
           ref={inputRef}
           autoFocus type="text" value={query}
@@ -465,20 +498,20 @@ function AddStopInput({ onAdd, destination }: {
             if (e.key === 'Escape') { setOpen(false); setQuery(''); setShowSuggestions(false) }
           }}
           placeholder='e.g. "lunch 1pm" or search a place...'
-          className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0]"
+          className="flex-1 bg-transparent outline-none text-sm text-[#0A0A0A] placeholder:text-[#A3A3A3]"
         />
-        <button onClick={handleManualAdd} className="text-xs text-[#C17B4E] font-medium hover:text-[#8B5330]">Add</button>
-        <button onClick={() => { setOpen(false); setQuery(''); setShowSuggestions(false) }} className="text-xs text-[#8C8070] hover:text-[#2C2416]">Cancel</button>
+        <button onClick={handleManualAdd} className="text-xs text-[#3D5AFE] font-medium hover:text-[#2E45D6]">Add</button>
+        <button onClick={() => { setOpen(false); setQuery(''); setShowSuggestions(false) }} className="text-xs text-[#6B6B6B] hover:text-[#0A0A0A]">Cancel</button>
       </div>
       {showSuggestions && suggestions.length > 0 && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShowSuggestions(false)} />
-          <div className="fixed bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"
+          <div className="fixed bg-white border border-[#E5E5E5] rounded-md shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"
             style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}>
             {suggestions.map((s, i) => (
-              <button key={i} onClick={() => handleSelect(s)} className="w-full text-left px-4 py-2.5 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0">
-                <p className="text-sm text-[#2C2416] font-medium truncate">{s.structured_formatting?.main_text || s.description}</p>
-                <p className="text-xs text-[#8C8070] truncate">{s.structured_formatting?.secondary_text || ''}</p>
+              <button key={i} onClick={() => handleSelect(s)} className="w-full text-left px-4 py-2.5 hover:bg-[#EEF0FF] transition-colors border-b border-[#EFEFEF] last:border-0">
+                <p className="text-sm text-[#0A0A0A] font-medium truncate">{s.structured_formatting?.main_text || s.description}</p>
+                <p className="text-xs text-[#6B6B6B] truncate">{s.structured_formatting?.secondary_text || ''}</p>
               </button>
             ))}
           </div>
@@ -513,14 +546,14 @@ function DayTitle({ title, dayIndex, viewOnly, onChange }: {
           if (e.key === 'Enter') commit()
           if (e.key === 'Escape') { setDraft(title); setEditing(false) }
         }}
-        className="text-sm font-medium text-[#2C2416] bg-transparent border-b border-[#C17B4E] outline-none pb-0.5 w-40"
+        className="text-sm font-medium text-[#0A0A0A] bg-transparent border-b border-[#3D5AFE] outline-none pb-0.5 w-40"
       />
     )
   }
   return (
     <span
       onDoubleClick={() => { if (!viewOnly) { setDraft(title); setEditing(true) } }}
-      className={`text-sm font-medium text-[#2C2416] ${!viewOnly ? 'cursor-text select-none' : ''}`}
+      className={`text-sm font-medium text-[#0A0A0A] ${!viewOnly ? 'cursor-text select-none' : ''}`}
       title={!viewOnly ? 'Double-click to edit' : undefined}
     >
       {title}
@@ -528,7 +561,7 @@ function DayTitle({ title, dayIndex, viewOnly, onChange }: {
   )
 }
 
-export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '' }: Props) {
+export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '', onHoverStop, highlightedStopId, layout = 'stack' }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
 
@@ -637,14 +670,24 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
     }
   }
 
+  const isCarousel = layout === 'carousel'
+
   return (
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
-      <div className="flex flex-col gap-6">
+      <div
+        className={isCarousel ? 'flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 h-full' : 'flex flex-col gap-6'}
+        style={isCarousel ? { scrollSnapType: 'x mandatory', scrollPadding: '0 16px' } : undefined}
+      >
         {days.map((day, dayIndex) => {
           const color = DAY_COLORS[dayIndex % DAY_COLORS.length]
           return (
-            <div key={day.day} id={`day-${day.day}`} className="bg-white border border-[#E8DFD0] rounded-2xl overflow-visible">
-              <div className="px-5 py-3 flex items-center gap-3 rounded-t-2xl" style={{ background: `${color}15` }}>
+            <div
+              key={day.day}
+              id={`day-${day.day}`}
+              className={`bg-white border border-[#E5E5E5] rounded-lg ${isCarousel ? 'shrink-0 w-[88%] flex flex-col min-h-0' : 'overflow-visible'}`}
+              style={isCarousel ? { scrollSnapAlign: 'start' } : undefined}
+            >
+              <div className="px-5 py-3 flex items-center gap-3 rounded-t-2xl shrink-0" style={{ background: `${color}15` }}>
                 <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
                 <span className="text-xs font-medium uppercase tracking-widest" style={{ color }}>Day {day.day}</span>
                 <DayTitle
@@ -653,10 +696,10 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
                   viewOnly={viewOnly}
                   onChange={title => updateDayTitle(dayIndex, title)}
                 />
-                {getDayDate(startDate, dayIndex) && <span className="text-xs text-[#8C8070] ml-1">· {getDayDate(startDate, dayIndex)}</span>}
-                <span className="ml-auto text-xs text-[#C8BFB0]">{day.stops.length} stops</span>
+                {getDayDate(startDate, dayIndex) && <span className="text-xs text-[#6B6B6B] ml-1">· {getDayDate(startDate, dayIndex)}</span>}
+                <span className="ml-auto text-xs text-[#A3A3A3]">{day.stops.length} stops</span>
               </div>
-              <div className="border border-[#E8DFD0] rounded-b-2xl overflow-hidden">
+              <div className={`border border-[#E5E5E5] rounded-b-2xl ${isCarousel ? 'flex-1 min-h-0 overflow-y-auto' : 'overflow-hidden'}`}>
                 <DroppableDay id={`day-${day.day}`}>
                   <SortableContext items={day.stops.map(s => s.id)} strategy={verticalListSortingStrategy}>
                     {day.stops.map(stop => (
@@ -667,6 +710,8 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
                         onNameChange={name => updateStopName(dayIndex, stop.id, name)}
                         viewOnly={viewOnly}
                         destination={destination}
+                        onHoverStop={onHoverStop}
+                        highlighted={stop.id === highlightedStopId}
                       />
                     ))}
                   </SortableContext>

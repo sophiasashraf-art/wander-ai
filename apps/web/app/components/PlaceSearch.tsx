@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { Search } from 'lucide-react'
 
 interface SavedPlace {
   name: string
@@ -125,37 +126,37 @@ export default function PlaceSearch({ tripId, destination, onSaved, onBeforeSave
 
   return (
     <div className="relative">
-      <div ref={inputRef} className="flex items-center gap-2 bg-white border border-[#E8DFD0] rounded-xl px-3 py-2.5 focus-within:border-[#C17B4E] transition-colors">
-        <span className="text-[#8C8070] text-sm">🔍</span>
+      <div ref={inputRef} className="flex items-center gap-2 bg-white border border-[#E5E5E5] rounded-md px-3 py-2.5 focus-within:border-[#3D5AFE] transition-colors">
+        <Search size={14} strokeWidth={2} className="text-[#6B6B6B]" />
         <input
           type="text"
           value={query}
           onChange={e => setQuery(e.target.value)}
           onFocus={() => { if (suggestions.length > 0) { updateDropdownPos(); setOpen(true) } }}
           placeholder={`Search a place in ${destination}...`}
-          className="flex-1 bg-transparent outline-none text-sm text-[#2C2416] placeholder:text-[#C8BFB0]"
+          className="flex-1 bg-transparent outline-none text-sm text-[#0A0A0A] placeholder:text-[#A3A3A3]"
           disabled={saving}
         />
-        {saving && <span className="text-xs text-[#8C8070]">Saving...</span>}
+        {saving && <span className="text-xs text-[#6B6B6B]">Saving...</span>}
       </div>
 
       {open && suggestions.length > 0 && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
-            className="fixed bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+            className="fixed bg-white border border-[#E5E5E5] rounded-md shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
             style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}
           >
             {suggestions.map((s, i) => (
               <button
                 key={i}
                 onClick={() => handleSelect(s)}
-                className="w-full text-left px-4 py-3 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0"
+                className="w-full text-left px-4 py-3 hover:bg-[#EEF0FF] transition-colors border-b border-[#EFEFEF] last:border-0"
               >
-                <p className="text-sm text-[#2C2416] font-medium truncate">
+                <p className="text-sm text-[#0A0A0A] font-medium truncate">
                   {s.structured_formatting?.main_text || s.description}
                 </p>
-                <p className="text-xs text-[#8C8070] truncate mt-0.5">
+                <p className="text-xs text-[#6B6B6B] truncate mt-0.5">
                   {s.structured_formatting?.secondary_text || ''}
                 </p>
               </button>

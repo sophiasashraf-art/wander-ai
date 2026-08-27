@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 
 interface Props {
   value: string
-  onChange: (value: string) => void
+  onChange: (value: string, coords?: { lat: number; lng: number }) => void
   placeholder?: string
   className?: string
   disabled?: boolean
@@ -50,13 +50,22 @@ export default function CityAutocomplete({ value, onChange, placeholder = 'City 
     }, 250)
   }, [query])
 
-  function handleSelect(prediction: any) {
+  async function handleSelect(prediction: any) {
     const desc = prediction.description || ''
+    const token = sessionRef.current
     setQuery(desc)
-    onChange(desc)
     setOpen(false)
     setSuggestions([])
     sessionRef.current = crypto.randomUUID()
+
+    try {
+      const res = await fetch(`/api/places-details?placeId=${prediction.place_id}&session=${token}`)
+      const data = await res.json()
+      const loc = data.result?.geometry?.location
+      onChange(desc, loc ? { lat: loc.lat, lng: loc.lng } : undefined)
+    } catch {
+      onChange(desc)
+    }
   }
 
   return (
@@ -76,20 +85,20 @@ export default function CityAutocomplete({ value, onChange, placeholder = 'City 
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
-            className="fixed bg-white border border-[#E8DFD0] rounded-xl shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"
+            className="fixed bg-white border border-[#E5E5E5] rounded-md shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto"
             style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}
           >
             {suggestions.map((s, i) => (
               <button
                 key={i}
                 onMouseDown={e => { e.preventDefault(); handleSelect(s) }}
-                className="w-full text-left px-4 py-2.5 hover:bg-[#FEF8F4] transition-colors border-b border-[#F5F0E8] last:border-0"
+                className="w-full text-left px-4 py-2.5 hover:bg-[#EEF0FF] transition-colors border-b border-[#EFEFEF] last:border-0"
               >
-                <p className="text-sm text-[#2C2416] font-medium truncate">
+                <p className="text-sm text-[#0A0A0A] font-medium truncate">
                   {s.structured_formatting?.main_text || s.description}
                 </p>
                 {s.structured_formatting?.secondary_text && (
-                  <p className="text-xs text-[#8C8070] truncate">{s.structured_formatting.secondary_text}</p>
+                  <p className="text-xs text-[#6B6B6B] truncate">{s.structured_formatting.secondary_text}</p>
                 )}
               </button>
             ))}

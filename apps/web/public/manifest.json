@@ -4,8 +4,8 @@
   "description": "Turn all your travel finds into a trip",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#FDFAF5",
-  "theme_color": "#C17B4E",
+  "background_color": "#FFFFFF",
+  "theme_color": "#3D5AFE",
   "orientation": "portrait",
   "icons": [
     {

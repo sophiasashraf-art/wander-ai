@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { Check, Camera, ArrowRight } from 'lucide-react'
 
 interface Props {
   tripId: string
@@ -82,12 +83,12 @@ export default function AddMorePlaces({ tripId, onMerged }: Props) {
 
   return (
     <div className="w-full max-w-2xl mt-10 mb-16">
-      <div className="bg-white border border-[#E8DFD0] rounded-2xl p-5">
-        <label className="block text-xs font-medium text-[#C17B4E] uppercase tracking-widest mb-3">
+      <div className="bg-white border border-[#E5E5E5] rounded-lg p-5">
+        <label className="block text-xs font-medium text-[#3D5AFE] uppercase tracking-widest mb-3">
           Add more places
         </label>
         <textarea
-          className="w-full bg-transparent outline-none text-[#2C2416] text-sm leading-relaxed resize-none placeholder:text-[#8C8070] mb-3"
+          className="w-full bg-transparent outline-none text-[#0A0A0A] text-sm leading-relaxed resize-none placeholder:text-[#6B6B6B] mb-3"
           rows={3}
           placeholder="Paste links, restaurant names, or notes to add to this trip..."
           value={input}
@@ -101,8 +102,8 @@ export default function AddMorePlaces({ tripId, onMerged }: Props) {
           onDragLeave={() => setDragOver(false)}
           onDrop={e => { e.preventDefault(); setDragOver(false); processImages(Array.from(e.dataTransfer.files)) }}
           onClick={() => inputRef.current?.click()}
-          className={`border-2 border-dashed rounded-xl px-4 py-3 cursor-pointer transition-colors mb-4 ${
-            dragOver ? 'border-[#C17B4E] bg-[#FEF8F4]' : 'border-[#E8DFD0] hover:border-[#C17B4E] hover:bg-[#FEF8F4]'
+          className={`border-2 border-dashed rounded-md px-4 py-3 cursor-pointer transition-colors mb-4 ${
+            dragOver ? 'border-[#3D5AFE] bg-[#EEF0FF]' : 'border-[#E5E5E5] hover:border-[#3D5AFE] hover:bg-[#EEF0FF]'
           }`}
         >
           <input
@@ -118,14 +119,14 @@ export default function AddMorePlaces({ tripId, onMerged }: Props) {
               {previews.map((src, i) => (
                 <img key={i} src={src} alt="" className="w-10 h-10 object-cover rounded-lg shrink-0" />
               ))}
-              <span className="text-xs text-[#8C8070]">
-                {imageLoading ? 'Reading images...' : `✓ ${previews.length} image${previews.length > 1 ? 's' : ''} extracted — click to add more`}
+              <span className="flex items-center gap-1 text-xs text-[#6B6B6B]">
+                {imageLoading ? 'Reading images...' : <><Check size={12} strokeWidth={2.5} className="text-[#7A9E7E]" /> {previews.length} image{previews.length > 1 ? 's' : ''} extracted — click to add more</>}
               </span>
             </div>
           ) : (
             <div className="flex items-center gap-3">
-              <span className="text-lg">📷</span>
-              <span className="text-xs text-[#8C8070]">
+              <Camera size={16} strokeWidth={1.5} className="text-[#A3A3A3]" />
+              <span className="text-xs text-[#6B6B6B]">
                 {imageLoading ? 'Reading image...' : 'Drop screenshots or click to upload'}
               </span>
             </div>
@@ -134,14 +135,14 @@ export default function AddMorePlaces({ tripId, onMerged }: Props) {
 
         <div className="flex items-center justify-between gap-3">
           {status && (
-            <p className="text-xs text-[#8C8070] flex-1">{status}</p>
+            <p className="text-xs text-[#6B6B6B] flex-1">{status}</p>
           )}
           <button
             onClick={handleAdd}
             disabled={loading || (!input.trim() && !imageLoading)}
-            className="ml-auto px-4 py-2 bg-[#C17B4E] text-white rounded-xl text-sm font-medium hover:bg-[#8B5330] transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            className="group ml-auto flex items-center gap-1.5 px-4 py-2 bg-[#3D5AFE] text-white rounded-md text-sm font-medium hover:bg-[#2E45D6] transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
-            {loading ? 'Adding...' : 'Add to trip →'}
+            {loading ? 'Adding...' : <>Add to trip <ArrowRight size={13} strokeWidth={2} className="transition-transform group-hover:translate-x-0.5" /></>}
           </button>
         </div>
       </div>

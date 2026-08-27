@@ -25,7 +25,7 @@ async function geocodePlace(name: string, destination: string): Promise<any> {
 
 export async function POST(req: Request) {
   try {
-    const { messages, destination, duration, vibe, arrivalTime, departureTime, cities } = await req.json()
+    const { messages, destination, duration, vibe, arrivalTime, departureTime, cities, currentItinerary } = await req.json()
 
     const stopsPerDay = vibe === 'relaxed' ? 3 : vibe === 'everything' ? 6 : 4
     const numDays = parseInt(duration) || 3
@@ -46,15 +46,9 @@ export async function POST(req: Request) {
       ? `\n- This is a MULTI-CITY trip. You MUST create days for EVERY city in order:\n${cities.map((c: any, i: number) => `  ${c.name}: ${c.days} day(s)`).join('\n')}\n- Total: ${numDays} days. Assign days sequentially (e.g. if Tokyo=2, Kyoto=3: Days 1-2 are Tokyo, Days 3-5 are Kyoto)\n- Title each day with the city name`
       : ''
 
-    const systemPrompt = `You are a friendly, knowledgeable travel planner helping someone plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
-${timeConstraints}
+    const hasExistingItinerary = currentItinerary?.days?.some((d: any) => d.stops?.length > 0)
 
-Your job:
-1. Chat naturally — ask clarifying questions if needed (food preferences, interests, budget, neighborhoods, etc.)
-2. When you have enough info OR the user says to go ahead, generate the full itinerary
-
-When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`json ... \`\`\` with this exact format:
-{
+    const jsonFormatBlock = `{
   "days": [
     {
       "day": 1,
@@ -70,7 +64,38 @@ When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`js
       ]
     }
   ]
-}
+}`
+
+    const systemPrompt = hasExistingItinerary
+      ? `You are a friendly, knowledgeable travel planner helping someone adjust their EXISTING itinerary for ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
+${timeConstraints}
+
+Here is their CURRENT itinerary — this is real, already-planned content, not a suggestion:
+${JSON.stringify(currentItinerary.days.map((d: any) => ({ day: d.day, title: d.title, stops: d.stops.map((s: any) => ({ name: s.name, time: s.time, category: s.category, note: s.note })) })), null, 2)}
+
+Your job:
+1. Understand what change the user is asking for (e.g. "make Shibuya its own day," "swap day 2 and day 3," "add a bar to day 1 evening," "what's a better order for these stops")
+2. Apply ONLY that change. Do not invent an unrelated new itinerary.
+3. Reply with the FULL updated itinerary (every day, every stop — modified and unmodified) as a JSON block wrapped in \`\`\`json ... \`\`\` using this exact format:
+${jsonFormatBlock}
+
+Rules:
+- Keep every existing stop's name, time, category, and note EXACTLY as given unless the user's request means it should change (moved, retimed, removed, or a new one added)
+- If adding a new stop, only suggest real, well-known places that actually exist, using their exact real name, and mark it "suggested": true. Existing stops keep "suggested": false unless already true.
+- Assign times for any new/moved stops based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
+- ${numDays} days total${cityRules}
+- If the user is just asking a question (not requesting a change), answer conversationally and omit the JSON block entirely — don't return the itinerary unchanged just to have something to return.
+
+Before the JSON (when you include one), write a brief note on what you changed.`
+      : `You are a friendly, knowledgeable travel planner helping someone plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
+${timeConstraints}
+
+Your job:
+1. Chat naturally — ask clarifying questions if needed (food preferences, interests, budget, neighborhoods, etc.)
+2. When you have enough info OR the user says to go ahead, generate the full itinerary
+
+When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`json ... \`\`\` with this exact format:
+${jsonFormatBlock}
 
 Rules for the itinerary:
 - ONLY suggest real, well-known places that actually exist
