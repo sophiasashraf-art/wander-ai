@@ -11,13 +11,38 @@ const maps = new Client()
 function extractUrls(text: string): string[] {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const matches = text.match(urlRegex) || []
+  // Strip already-matched URLs before scanning for bare domains — otherwise this
+  // regex also matches the tail of a URL already captured above (e.g. it'd pull
+  // "tiktok.com/@user/video/123" back out of "https://www.tiktok.com/@user/video/123",
+  // producing a mangled www.-less duplicate that TikTok's oEmbed endpoint rejects.
+  const textWithoutUrls = text.replace(urlRegex, ' ')
   const bareUrlRegex = /(?<![\/\w])([\w-]+\.[\w-]+(?:\.[\w-]+)*\/[^\s]*)/g
-  const bareMatches = text.match(bareUrlRegex) || []
+  const bareMatches = textWithoutUrls.match(bareUrlRegex) || []
   const withProtocol = bareMatches.map(u => `https://${u}`)
   return [...new Set([...matches, ...withProtocol])]
 }
 
+// TikTok's video pages are almost entirely client-rendered, so a plain scrape
+// (Firecrawl included) usually comes back empty or with no caption text. TikTok
+// publishes a public oEmbed endpoint specifically for this — no login/JS needed,
+// and its "title" field is the video caption, which is where place names live.
+async function scrapeTikTokOembed(url: string): Promise<string> {
+  try {
+    const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`)
+    if (!res.ok) return ''
+    const data = await res.json()
+    if (!data.title) return ''
+    return `TikTok by ${data.author_name || 'unknown'}: ${data.title}`
+  } catch {
+    return ''
+  }
+}
+
 async function scrapeUrl(url: string): Promise<string> {
+  if (url.includes('tiktok.com')) {
+    const oembed = await scrapeTikTokOembed(url)
+    if (oembed) return oembed
+  }
   try {
     const result = await firecrawl.scrapeUrl(url, { formats: ['markdown'] }) as any
     if (result.markdown) return result.markdown.slice(0, 15000)
@@ -63,7 +88,10 @@ export async function POST(req: Request) {
 
     if (urls.length > 0) {
       const scraped = await Promise.all(urls.map(scrapeUrl))
-      const scrapedContent = scraped.filter(Boolean).join('\n\n')
+      const scrapedContent = urls
+        .map((url, i) => scraped[i] ? `[Source: ${url}]\n${scraped[i]}` : '')
+        .filter(Boolean)
+        .join('\n\n')
       if (scrapedContent) {
         enrichedText = `${text}\n\nContent from links:\n${scrapedContent}`
       }
@@ -78,13 +106,14 @@ export async function POST(req: Request) {
 For each place, also capture the context around why it was saved — this is important, don't skip it:
 - tip: practical advice mentioned in the content (e.g. "arrive before 10am, there's a line", "cash only", "book ahead"). Omit if none is mentioned.
 - why_recommended: what makes it stand out per the content — vibe, standout dish, unique feature (e.g. "unique cocktails, intimate setting", "best matcha in the city"). Omit if the content gives no real reason.
+- source_url: if the content is broken into "[Source: <url>]" blocks (from scraped links) and this place clearly came from one specific block, use that block's exact URL. If there's only one link total and no blocks, or you can't tell which link a place came from, omit this field — don't guess.
 
-Don't invent tips or reasons that aren't supported by the content — omit the field rather than guess.
+Don't invent tips, reasons, or source URLs that aren't supported by the content — omit the field rather than guess.
 
 Category must be one of: restaurant | bar | activity | neighborhood | stay | cafe | other
 - Use "bar" for cocktail bars, pubs, lounges, clubs, and nightlife venues — not "activity".
 
-Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "category": "restaurant|bar|activity|neighborhood|stay|cafe|other", "city": "...", "description": "...", "tip": "...", "why_recommended": "..."}]}`,
+Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "category": "restaurant|bar|activity|neighborhood|stay|cafe|other", "city": "...", "description": "...", "tip": "...", "why_recommended": "...", "source_url": "..."}]}`,
       }, {
         role: 'user',
         content: enrichedText,
@@ -93,9 +122,11 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
     })
 
     const result = JSON.parse(response.choices[0].message.content || '{"places":[]}')
-    const sourceUrl = urls.length === 1 ? urls[0] : undefined
-    if (sourceUrl) {
-      result.places = result.places.map((p: any) => ({ ...p, source_url: sourceUrl }))
+    // Fallback for the common case of a single pasted link with no per-place
+    // attribution from GPT — everything obviously came from that one source.
+    const singleUrl = urls.length === 1 ? urls[0] : undefined
+    if (singleUrl) {
+      result.places = result.places.map((p: any) => ({ ...p, source_url: p.source_url || singleUrl }))
     }
 
     // Enrich all places with real coordinates from Google Places

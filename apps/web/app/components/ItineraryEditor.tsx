@@ -4,9 +4,17 @@ import { useState, useEffect, useRef } from 'react'
 import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon } from 'lucide-react'
+import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart } from 'lucide-react'
 
 const DAY_COLORS = ['#3D5AFE', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
+
+export function sourceLabel(url: string): string {
+  const host = (() => { try { return new URL(url).hostname } catch { return '' } })()
+  if (host.includes('tiktok.com')) return 'Watch the TikTok'
+  if (host.includes('instagram.com')) return 'View the Instagram post'
+  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'Watch the video'
+  return 'View the source'
+}
 
 export interface Stop {
   id: string; time: string; manualTime?: boolean
@@ -218,8 +226,14 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
             </button>
           )}
         </div>
-        {stop.suggested && (
-          <span className="inline-block text-xs px-2 py-0.5 mt-1 ml-16 rounded-full bg-[#EFEFEF] text-[#6B6B6B]">suggested</span>
+        {stop.suggested ? (
+          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 mt-1 ml-16 rounded-full bg-[#EEF0FF] text-[#3D5AFE]">
+            <Sparkles size={10} strokeWidth={2} /> Mapture pick
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 mt-1 ml-16 rounded-full bg-[#FBF4F4] text-[#D14343]">
+            <Heart size={10} strokeWidth={2} className="fill-[#D14343]" /> Your save
+          </span>
         )}
         {editingNote ? (
           <input autoFocus type="text" defaultValue={stop.note}
@@ -247,8 +261,12 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
   )
 }
 
-function PlacePopup({ stop, destination, anchorRect, onClose }: {
-  stop: Stop; destination: string; anchorRect: DOMRect; onClose: () => void
+// Loosened from `Stop` so callers with a plain extracted-place shape (no id/time/
+// category yet, e.g. the homepage's saved-place cards) can reuse this popup too.
+export type PopupPlace = Pick<Stop, 'name'> & Partial<Omit<Stop, 'name'>>
+
+export function PlacePopup({ stop, destination, anchorRect, onClose }: {
+  stop: PopupPlace; destination: string; anchorRect: DOMRect; onClose: () => void
 }) {
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.name + (destination ? ` ${destination}` : ''))}`
 
@@ -373,7 +391,7 @@ function PlacePopup({ stop, destination, anchorRect, onClose }: {
           {stop.source_url && (
             <a href={stop.source_url} target="_blank" rel="noopener noreferrer"
               className="mt-1.5 flex items-center gap-1 text-xs text-[#A3A3A3] hover:text-[#3D5AFE] truncate transition-colors">
-              <LinkIcon size={11} strokeWidth={2} /> Source
+              <LinkIcon size={11} strokeWidth={2} /> {sourceLabel(stop.source_url)}
             </a>
           )}
           <a

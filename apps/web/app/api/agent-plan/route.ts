@@ -25,7 +25,7 @@ async function geocodePlace(name: string, destination: string): Promise<any> {
 
 export async function POST(req: Request) {
   try {
-    const { messages, destination, duration, vibe, arrivalTime, departureTime, cities, currentItinerary } = await req.json()
+    const { messages, destination, duration, vibe, arrivalTime, departureTime, cities, currentItinerary, savedPlaces } = await req.json()
 
     const stopsPerDay = vibe === 'relaxed' ? 3 : vibe === 'everything' ? 6 : 4
     const numDays = parseInt(duration) || 3
@@ -47,6 +47,7 @@ export async function POST(req: Request) {
       : ''
 
     const hasExistingItinerary = currentItinerary?.days?.some((d: any) => d.stops?.length > 0)
+    const hasSavedPlaces = !hasExistingItinerary && savedPlaces?.length > 0
 
     const jsonFormatBlock = `{
   "days": [
@@ -87,6 +88,28 @@ Rules:
 - If the user is just asking a question (not requesting a change), answer conversationally and omit the JSON block entirely — don't return the itinerary unchanged just to have something to return.
 
 Before the JSON (when you include one), write a brief note on what you changed.`
+      : hasSavedPlaces
+      ? `You are a friendly, knowledgeable travel planner helping someone build ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
+${timeConstraints}
+
+They've already saved these real places — from things they pasted or searched — this is the raw material for the trip, not a suggestion:
+${JSON.stringify(savedPlaces.map((p: any) => ({ name: p.name, category: p.category, note: p.description || p.note, city: p.city })), null, 2)}
+
+Your job:
+1. Chat naturally if they want to talk through preferences first — otherwise build the itinerary right away
+2. Organize these saved places into a realistic day-by-day plan (group by proximity/neighborhood, sensible times)
+3. If there are real gaps (e.g. no dinner options among their saved places, or too few stops for the trip length), fill them in with a few well-known real suggestions — mark ONLY those "suggested": true
+
+When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`json ... \`\`\` with this exact format:
+${jsonFormatBlock}
+
+Rules:
+- Use every saved place unless it clearly doesn't fit (e.g. wrong city) — don't drop one silently, mention it if you leave one out
+- Every saved place keeps "suggested": false and its exact name, category, and note
+- Assign times based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
+- ${numDays} days total, roughly ${stopsPerDay} stops per day${cityRules}
+
+Before the JSON, write a brief friendly summary of the plan. After the JSON, ask if they want to change anything.`
       : `You are a friendly, knowledgeable travel planner helping someone plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
 ${timeConstraints}
 

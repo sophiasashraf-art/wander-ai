@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { APIProvider, Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
-import ItineraryEditor, { Day, recalcTimes } from './components/ItineraryEditor'
+import ItineraryEditor, { Day, recalcTimes, sourceLabel, PlacePopup } from './components/ItineraryEditor'
 import TripsSidebar from './components/TripsSidebar'
 import AddMorePlaces from './components/AddMorePlaces'
 import PlaceSearch from './components/PlaceSearch'
@@ -11,7 +11,7 @@ import CityAutocomplete from './components/CityAutocomplete'
 import DurationSpinner from './components/DurationSpinner'
 import WorldMapPin from './components/WorldMapPin'
 import {
-  Menu, MapPin, Route, Sparkles, CalendarDays, Bot, Search, Camera,
+  Menu, MapPin, Route, Sparkles, CalendarDays, Bot, Search, Camera, Heart,
   Leaf, Scale, Zap, ArrowRight, Pencil, Eye, Star, Check, Undo2,
   ChevronDown, SlidersHorizontal, Plus,
   Lightbulb, Link as LinkIcon,
@@ -55,6 +55,14 @@ function ShareButton({ onShare }: { onShare: (viewOnly: boolean) => void }) {
 
 const DAY_COLORS = ['#3D5AFE', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
+const CATEGORY_EMOJI: Record<string, string> = {
+  restaurant: '🍜', bar: '🍹', cafe: '☕', activity: '🎨', museum: '🎨',
+  landmark: '🎨', stay: '🏨', shopping: '🛍', neighborhood: '🌿', park: '🌿', other: '📍',
+}
+function categoryEmoji(category: string): string {
+  return CATEGORY_EMOJI[(category || '').toLowerCase()] || '📍'
+}
+
 // Imperative map control: pans to a hovered stop, and re-fits bounds with
 // left padding equal to the floating panel's current width so markers
 // never end up hidden underneath it.
@@ -71,14 +79,19 @@ function MapController({ markers, hoveredMarker, panelPaddingLeft }: {
     }
   }, [map, hoveredMarker])
 
+  // Fingerprint the actual coordinates rather than depending on `markers` itself —
+  // the array is a new reference every render (e.g. on hover), which would fight
+  // the user's own pan/zoom; this only changes when the trip's real markers do
+  // (switching trips, regenerating), which is when we actually want to re-fit.
+  const markersKey = markers.map(m => `${m.lat.toFixed(5)},${m.lng.toFixed(5)}`).join('|')
+
   useEffect(() => {
     if (!map || markers.length === 0) return
     const bounds = new google.maps.LatLngBounds()
     markers.forEach(m => bounds.extend(m))
     map.fitBounds(bounds, { left: panelPaddingLeft, top: 40, right: 40, bottom: 40 })
-    // Re-fit only when the panel width changes meaningfully, not on every marker re-render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, panelPaddingLeft])
+  }, [map, panelPaddingLeft, markersKey])
 
   return null
 }
@@ -318,7 +331,7 @@ export default function Home() {
   const [inputTab, setInputTab] = useState<'ai' | 'manual'>('ai')
   const [buildMode, setBuildMode] = useState<'ai' | 'build' | 'agent'>('ai')
   const [tripMode, setTripMode] = useState<'single' | 'multi'>('single')
-  const [cities, setCities] = useState<{ name: string; days: number }[]>([{ name: '', days: 2 }])
+  const [cities, setCities] = useState<{ name: string; days: number; coords?: { lat: number; lng: number } }[]>([{ name: '', days: 2 }])
   const [arrivalTime, setArrivalTime] = useState('')   // e.g. "14:00"
   const [departureTime, setDepartureTime] = useState('') // e.g. "11:00"
   const [agentMessages, setAgentMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
@@ -332,6 +345,15 @@ export default function Home() {
   const [showAskMapture, setShowAskMapture] = useState(false)
   const [hoveredStopId, setHoveredStopId] = useState<string | null>(null)
   const [showUnscheduledMobile, setShowUnscheduledMobile] = useState(false)
+  // Progressive homepage flow: destination -> "got anything saved?" -> trip details -> build.
+  const [skippedSaves, setSkippedSaves] = useState(false)
+  const [showSavesInput, setShowSavesInput] = useState(false)
+  const [savedPlacePopup, setSavedPlacePopup] = useState<{ index: number; anchorRect: DOMRect } | null>(null)
+  // Standalone "save for later" (Beli-style) — no trip required, files into the Inbox.
+  const [showSaveForLater, setShowSaveForLater] = useState(false)
+  const [saveForLaterInput, setSaveForLaterInput] = useState('')
+  const [saveForLaterStatus, setSaveForLaterStatus] = useState<'idle' | 'saving' | 'done'>('idle')
+  const [saveForLaterCount, setSaveForLaterCount] = useState(0)
   const [markerPopup, setMarkerPopup] = useState<{ stopId: string; anchorRect: DOMRect } | null>(null)
   const [panelWidthPx, setPanelWidthPx] = useState(400)
   const [sheetHeightVh, setSheetHeightVh] = useState(55)
@@ -546,6 +568,8 @@ export default function Home() {
     setEditableDays([])
     setAgentMessages([])
     setAgentInput('')
+    setSkippedSaves(false)
+    setShowSavesInput(false)
     window.history.replaceState({}, '', '/')
   }
 
@@ -642,6 +666,27 @@ export default function Home() {
     }, isMobile && sheetHeightVh < 55 ? 200 : 0)
   }
 
+  // Beli-style save with no trip attached — files into the per-city Inbox
+  // (see /api/inbox/add) so it's there whenever the user is ready to plan.
+  async function handleSaveForLater() {
+    if (!saveForLaterInput.trim()) return
+    setSaveForLaterStatus('saving')
+    try {
+      const res = await fetch('/api/inbox/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: saveForLaterInput }),
+      })
+      const data = await res.json()
+      const count = (data.added || []).reduce((sum: number, c: any) => sum + c.added, 0)
+      setSaveForLaterCount(count)
+      setSaveForLaterStatus('done')
+      setSaveForLaterInput('')
+    } catch {
+      setSaveForLaterStatus('idle')
+    }
+  }
+
   async function handleAgentSend(userMsg?: string) {
     const msg = userMsg || agentInput.trim()
     const agentDestination = tripMode === 'multi'
@@ -671,6 +716,9 @@ export default function Home() {
           arrivalTime: arrivalTime || undefined,
           departureTime: departureTime || undefined,
           currentItinerary: editableDays.some(d => d.stops.length > 0) ? { days: editableDays } : undefined,
+          savedPlaces: places.length > 0
+            ? places.map(p => ({ name: p.name, category: p.category, description: p.description, city: p.city }))
+            : undefined,
         }),
       })
       const data = await res.json()
@@ -926,8 +974,11 @@ export default function Home() {
   }
 
   async function handleGenerateItinerary() {
-    if (!tripId) {
-      console.error('No tripId — please extract places first')
+    // Covers both paths: places already extracted (tripId exists), and
+    // "nothing yet" — build from scratch (no trip row created until now).
+    const id = await ensureTripCreated()
+    if (!id) {
+      console.error('No destination — please enter one before generating')
       return
     }
     setGenerating(true)
@@ -938,12 +989,12 @@ export default function Home() {
     await supabase
       .from('trips')
       .update({ duration: `${duration} days`, vibe })
-      .eq('id', tripId)
+      .eq('id', id)
 
     const res = await fetch('/api/generate-itinerary', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tripId, arrivalTime: arrivalTime || undefined, departureTime: departureTime || undefined }),
+      body: JSON.stringify({ tripId: id, arrivalTime: arrivalTime || undefined, departureTime: departureTime || undefined }),
     })
 
     const data = await res.json()
@@ -1012,8 +1063,8 @@ export default function Home() {
     }
 
     // Save itinerary to Supabase + put trip in URL
-    await supabase.from('trips').update({ itinerary: { days: finalDays } }).eq('id', tripId)
-    window.history.replaceState({}, '', `?trip=${tripId}`)
+    await supabase.from('trips').update({ itinerary: { days: finalDays } }).eq('id', id)
+    window.history.replaceState({}, '', `?trip=${id}`)
 
     setGenerating(false)
   }
@@ -1180,14 +1231,55 @@ export default function Home() {
     ? { lat: (mapMarkers[0] as any).lat, lng: (mapMarkers[0] as any).lng }
     : { lat: 40.7128, lng: -74.0060 }
 
+  // Fallback for the decorative background pin once a trip has stops geocoded —
+  // covers both a freshly generated trip and one reloaded from a saved link,
+  // where destinationCoords (set only via the homepage autocomplete) is unset.
+  const worldMapPinCoords = destinationCoords || (mapMarkers.length > 0
+    ? {
+        lat: mapMarkers.reduce((s: number, m: any) => s + m.lat, 0) / mapMarkers.length,
+        lng: mapMarkers.reduce((s: number, m: any) => s + m.lng, 0) / mapMarkers.length,
+      }
+    : null)
+
+  const isMultiCityTrip = tripMode === 'multi' || destination.includes('→') || editableDays.some((d: any) => d.city)
+
+  // One background pin per city for multi-city trips: prefer coords captured live
+  // from the multi-city composer, falling back to averaging each city's geocoded
+  // stops (covers a trip reloaded from a saved link, where composer state is empty).
+  const worldMapPinCoordsList: { lat: number; lng: number }[] = isMultiCityTrip
+    ? (() => {
+        const fromComposer = cities.filter(c => c.name.trim() && c.coords).map(c => c.coords!)
+        if (fromComposer.length > 0) return fromComposer
+        const groups: Record<string, { lat: number; lng: number }[]> = {}
+        editableDays.forEach((day: any) => {
+          const city = day.city || (day.title?.includes('—') ? day.title.split('—')[0].trim() : day.title)
+          if (!city) return
+          day.stops.forEach((stop: any) => {
+            const lat = stop.lat ?? places.find((p: any) => p.name.toLowerCase().trim() === stop.name.toLowerCase().trim())?.lat
+            const lng = stop.lng ?? places.find((p: any) => p.name.toLowerCase().trim() === stop.name.toLowerCase().trim())?.lng
+            if (lat && lng) {
+              if (!groups[city]) groups[city] = []
+              groups[city].push({ lat, lng })
+            }
+          })
+        })
+        return Object.values(groups).map(pts => ({
+          lat: pts.reduce((s, p) => s + p.lat, 0) / pts.length,
+          lng: pts.reduce((s, p) => s + p.lng, 0) / pts.length,
+        }))
+      })()
+    : worldMapPinCoords ? [worldMapPinCoords] : []
+
   const scheduledNames = new Set(
     editableDays.flatMap((d: Day) => d.stops.map((s: any) => s.name))
   )
   const unscheduledPlaces = places.filter(p => !scheduledNames.has(p.name))
 
   return (
-    <main ref={mainRef} className="relative min-h-screen bg-gradient-subtle flex flex-col items-center px-6 py-12 pt-20">
-      {!tripSaved && <WorldMapPin coords={destinationCoords} containerRef={mainRef} />}
+    <main ref={mainRef} className="relative z-0 min-h-screen bg-gradient-subtle flex flex-col items-center px-6 py-12 pt-20">
+      {worldMapPinCoordsList.map((c, i) => (
+        <WorldMapPin key={i} coords={c} containerRef={mainRef} />
+      ))}
 
       {/* Trips sidebar */}
       <TripsSidebar
@@ -1213,14 +1305,21 @@ export default function Home() {
         mapture<span className="text-[#3D5AFE]">.</span>
       </h1>
       <p className="text-[#6B6B6B] text-base mb-14">
-        Turn all your travel finds into a trip
+        Plan your trip, your way.
       </p>
 
       {/* Only show the build form when not viewing a saved trip */}
       {!tripSaved && (<>
       <div className="w-full max-w-2xl">
 
-        {/* Build mode — three equally-visible ways to start, compact single row */}
+        <p className="text-sm text-[#6B6B6B] text-center mb-4">
+          Already have places in mind? Add them below. Starting from scratch? Mapture will find them for you.
+        </p>
+
+        {/* Build mode — single-city merges paste/extract with the chat agent into one
+            flow (scraping and conversation combined), so it no longer needs its own
+            separate "Explore ideas" tab. Multi-city keeps the original 3-way choice
+            since that flow wasn't restructured. */}
         {mounted && (
           <div className="flex gap-1 mb-3 p-1 bg-black/[0.03] rounded-md">
             <button
@@ -1237,18 +1336,25 @@ export default function Home() {
               <CalendarDays size={13} strokeWidth={2} className={buildMode === 'build' ? 'text-[#3D5AFE]' : ''} />
               Plan it myself
             </button>
-            <button
-              onClick={() => setBuildMode('agent')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all ${buildMode === 'agent' ? 'bg-white text-[#0A0A0A] shadow-[0_1px_2px_rgba(0,0,0,0.06),0_1px_1px_rgba(0,0,0,0.04)]' : 'text-[#6B6B6B] hover:text-[#0A0A0A]'}`}
-            >
-              <Bot size={13} strokeWidth={2} className={buildMode === 'agent' ? 'text-[#3D5AFE]' : ''} />
-              Explore ideas
-            </button>
+            {tripMode === 'multi' && (
+              <button
+                onClick={() => setBuildMode('agent')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all ${buildMode === 'agent' ? 'bg-white text-[#0A0A0A] shadow-[0_1px_2px_rgba(0,0,0,0.06),0_1px_1px_rgba(0,0,0,0.04)]' : 'text-[#6B6B6B] hover:text-[#0A0A0A]'}`}
+              >
+                <Bot size={13} strokeWidth={2} className={buildMode === 'agent' ? 'text-[#3D5AFE]' : ''} />
+                Explore ideas
+              </button>
+            )}
           </div>
         )}
 
-        {/* Composer: destination + primary input, one card */}
-        <div className="bg-white border border-[#E5E5E5] rounded-lg shadow-sm overflow-hidden mb-3">
+        {/* Composer: destination + primary input, one card.
+            Frosted rather than solid white so the world-map background (and its
+            destination pin) can show through faintly instead of being hidden.
+            No backdrop-blur here: `backdrop-filter` on an ancestor makes it the
+            containing block for `position: fixed` descendants, which broke
+            CityAutocomplete's fixed-positioned suggestion dropdown. */}
+        <div className="bg-white/80 border border-[#E5E5E5] rounded-lg shadow-sm overflow-hidden mb-3">
           {/* Destination row — always visible, required for every mode */}
           {tripMode === 'single' ? (
             <div className="flex items-center gap-2 px-5 pt-4 pb-3 border-b border-[#EFEFEF]">
@@ -1304,7 +1410,147 @@ export default function Home() {
           )}
 
           {/* Primary content per mode */}
-          {mounted && buildMode === 'ai' && inputTab === 'ai' && (
+
+          {/* Progressive flow — "got anything saved?" -> cards -> build. No destination
+              required up front: someone may not know where they're going yet, and
+              extraction already auto-detects the destination from what they paste
+              (see autoDetectDestination in handleExtract) — don't gate on it here. */}
+          {mounted && buildMode === 'ai' && tripMode === 'single' && (
+            places.length > 0 ? (
+              <div className="p-5">
+                <p className="text-sm font-medium text-[#0A0A0A] mb-3 flex items-center gap-1.5">
+                  <Heart size={14} strokeWidth={2} className="text-[#D14343] fill-[#D14343]" />
+                  {places.length} save{places.length > 1 ? 's' : ''} added
+                </p>
+                <div className="space-y-2 mb-3 max-h-72 overflow-y-auto">
+                  {places.map((place, i) => (
+                    <div key={i} className="flex items-start gap-2.5 p-3 border border-[#E5E5E5] rounded-lg bg-white group relative">
+                      <span className="text-base leading-none mt-0.5 shrink-0">{categoryEmoji(place.category)}</span>
+                      <div className="flex-1 min-w-0">
+                        <button
+                          onClick={e => setSavedPlacePopup({ index: i, anchorRect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
+                          className="text-sm font-medium text-[#0A0A0A] hover:text-[#3D5AFE] truncate text-left transition-colors"
+                          title="View details"
+                        >
+                          {place.name}
+                        </button>
+                        <p className="text-xs text-[#6B6B6B] mt-0.5">{place.city || destination} · <span className="capitalize">{place.category}</span></p>
+                        {place.source_url && (
+                          <a href={place.source_url} target="_blank" rel="noopener noreferrer"
+                            className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] inline-flex items-center gap-1 mt-1 transition-colors">
+                            <LinkIcon size={11} strokeWidth={2} /> {sourceLabel(place.source_url)} ↗
+                          </a>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setPlaces(prev => prev.filter((_, j) => j !== i))}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 text-lg leading-none shrink-0"
+                        aria-label="Remove place"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => setShowSavesInput(true)} className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] transition-colors">
+                  + Add another
+                </button>
+                {savedPlacePopup && places[savedPlacePopup.index] && (
+                  <PlacePopup
+                    stop={places[savedPlacePopup.index]}
+                    destination={places[savedPlacePopup.index].city || destination}
+                    anchorRect={savedPlacePopup.anchorRect}
+                    onClose={() => setSavedPlacePopup(null)}
+                  />
+                )}
+              </div>
+            ) : showSavesInput ? (
+              <div className="p-5">
+                <button
+                  onClick={() => setShowSavesInput(false)}
+                  className="text-xs text-[#A3A3A3] hover:text-[#3D5AFE] transition-colors mb-2 inline-flex items-center gap-1"
+                >
+                  ← Back
+                </button>
+                <p className="text-sm font-medium text-[#0A0A0A] mb-1">Add your saved places</p>
+                <p className="text-xs text-[#6B6B6B] mb-3">Paste as much as you want. We'll find the places.</p>
+                {inputTab === 'ai' ? (
+                  <>
+                    <textarea
+                      className="w-full bg-[#FAFAFA] border border-[#E5E5E5] rounded-md p-3 outline-none text-[#0A0A0A] text-sm leading-relaxed resize-none placeholder:text-[#A3A3A3] focus:border-[#3D5AFE] transition-colors"
+                      rows={4}
+                      placeholder="Paste TikToks, Reels, Maps links, blogs — or just list places..."
+                      value={input}
+                      onChange={e => setInput(e.target.value)}
+                    />
+                    <ImageUpload onExtracted={text => setInput(prev => prev ? `${prev}\n${text}` : text)} />
+                  </>
+                ) : (
+                  <PlaceSearch
+                    tripId={tripId || ''}
+                    destination={destination}
+                    onSaved={place => setPlaces(prev => [...prev, place])}
+                    onBeforeSave={ensureTripCreated}
+                  />
+                )}
+                <div className="flex items-center justify-between mt-3">
+                  <button onClick={() => setInputTab(t => t === 'ai' ? 'manual' : 'ai')} className="text-xs text-[#A3A3A3] hover:text-[#3D5AFE] transition-colors">
+                    {inputTab === 'ai' ? 'Search a specific place instead' : 'Paste a link instead'}
+                  </button>
+                  {inputTab === 'ai' && (
+                    <button
+                      onClick={handleExtract}
+                      disabled={loading || !input.trim()}
+                      className="btn-primary text-sm py-2 px-4 rounded-md inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {loading ? 'Finding places...' : 'Find places'} <Sparkles size={13} strokeWidth={2} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : !skippedSaves ? (
+              <div className="p-5">
+                <p className="text-sm font-medium text-[#0A0A0A] mb-3 text-center">Start with what you've got</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setShowSavesInput(true)}
+                    className="text-left p-4 rounded-lg border border-[#E5E5E5] hover:border-[#D14343] hover:bg-[#FBF4F4] transition-colors group"
+                  >
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-[#0A0A0A]">
+                      <Heart size={14} strokeWidth={2} className="text-[#D14343] fill-[#D14343]" /> I have places saved
+                    </p>
+                    <p className="text-xs text-[#6B6B6B] mt-1 leading-relaxed">TikToks, Reels, screenshots, links &amp; recommendations</p>
+                    <p className="text-xs font-medium text-[#D14343] mt-2.5 inline-flex items-center gap-1">
+                      <Plus size={12} strokeWidth={2} /> Add my saves
+                    </p>
+                  </button>
+                  <button
+                    onClick={() => setSkippedSaves(true)}
+                    className="text-left p-4 rounded-lg border border-[#E5E5E5] hover:border-[#3D5AFE] hover:bg-[#EEF0FF] transition-colors group"
+                  >
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-[#0A0A0A]">
+                      <Sparkles size={14} strokeWidth={2} className="text-[#3D5AFE]" /> Start from scratch
+                    </p>
+                    <p className="text-xs text-[#6B6B6B] mt-1 leading-relaxed">Tell Mapture where you're going and what you like</p>
+                    <p className="text-xs font-medium text-[#3D5AFE] mt-2.5 inline-flex items-center gap-1">
+                      Plan with AI <ArrowRight size={12} strokeWidth={2} />
+                    </p>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="px-5 py-4 flex items-center justify-between gap-3">
+                <p className="text-xs text-[#6B6B6B]">Starting fresh — tell us about the trip below ↓</p>
+                <button
+                  onClick={() => setSkippedSaves(false)}
+                  className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] transition-colors shrink-0 inline-flex items-center gap-1"
+                >
+                  ← Actually, I have saves
+                </button>
+              </div>
+            )
+          )}
+
+          {/* Old flow — multi-city keeps the simple paste/search toggle */}
+          {mounted && buildMode === 'ai' && tripMode === 'multi' && inputTab === 'ai' && (
             <div className="p-5">
               <textarea
                 className="w-full bg-transparent outline-none text-[#0A0A0A] text-sm leading-relaxed resize-none placeholder:text-[#A3A3A3]"
@@ -1316,18 +1562,9 @@ export default function Home() {
               <ImageUpload onExtracted={text => setInput(prev => prev ? `${prev}\n${text}` : text)} />
             </div>
           )}
-          {mounted && buildMode === 'ai' && inputTab === 'manual' && (
+          {mounted && buildMode === 'ai' && tripMode === 'multi' && inputTab === 'manual' && (
             <div className="p-5">
-              {destination.trim() ? (
-                <PlaceSearch
-                  tripId={tripId || ''}
-                  destination={destination}
-                  onSaved={place => setPlaces(prev => [...prev, place])}
-                  onBeforeSave={ensureTripCreated}
-                />
-              ) : (
-                <p className="text-xs text-[#A3A3A3]">Enter a destination above first</p>
-              )}
+              <p className="text-xs text-[#A3A3A3]">Switch to a single destination to search for specific places</p>
             </div>
           )}
           {mounted && buildMode === 'build' && (
@@ -1342,11 +1579,11 @@ export default function Home() {
           )}
         </div>
 
-        {/* Primary CTA (AI mode) */}
-        {mounted && buildMode === 'ai' && (<>
+        {/* Old CTA — multi-city keeps the original extract/generate button */}
+        {mounted && buildMode === 'ai' && tripMode === 'multi' && (<>
           <button
             onClick={handleExtract}
-            disabled={loading || (!input.trim() && places.length === 0) || (tripMode === 'multi' && !cities.some(c => c.name.trim()))}
+            disabled={loading || (!input.trim() && places.length === 0) || !cities.some(c => c.name.trim())}
             className="group w-full py-4 btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none inline-flex items-center justify-center gap-1.5"
           >
             {loading ? 'Extracting places...' : places.length > 0 ? 'Generate itinerary' : 'Extract & generate'}
@@ -1354,15 +1591,6 @@ export default function Home() {
           </button>
           <p className="text-xs text-[#A3A3A3] text-center mt-2">We’ll put it together. You can tweak anything after.</p>
         </>)}
-
-        {/* Minor variant within paste & extract mode */}
-        {mounted && buildMode === 'ai' && (
-          <div className="flex items-center justify-center mt-3 text-xs text-[#A3A3A3]">
-            <button onClick={() => setInputTab(t => t === 'ai' ? 'manual' : 'ai')} className="hover:text-[#3D5AFE] transition-colors">
-              {inputTab === 'ai' ? 'Search a specific place instead' : 'Paste a link instead'}
-            </button>
-          </div>
-        )}
 
         {/* Customize disclosure — trip mode, duration/cities, dates, travel style */}
         {mounted && (
@@ -1389,7 +1617,7 @@ export default function Home() {
                       <span className="text-xs text-[#A3A3A3] w-4 shrink-0">{i + 1}.</span>
                       <CityAutocomplete
                         value={city.name}
-                        onChange={v => setCities(prev => prev.map((c, j) => j === i ? { ...c, name: v } : c))}
+                        onChange={(v, coords) => setCities(prev => prev.map((c, j) => j === i ? { ...c, name: v, coords } : c))}
                         placeholder="City or country..."
                         className="flex-1 bg-[#FFFFFF] border border-[#E5E5E5] rounded-md px-3 py-2 text-sm text-[#0A0A0A] outline-none focus:border-[#3D5AFE] transition-colors placeholder:text-[#A3A3A3]"
                       />
@@ -1504,22 +1732,40 @@ export default function Home() {
           </div>
         )}
 
-        {/* Plan for me mode — chat agent */}
-        {mounted && buildMode === 'agent' && (<>
+        {/* Chat agent — combined with paste & extract for single-city trips (scraping and
+            conversation live in one flow: extract, then talk through the rest right below
+            it), and also reachable on its own via "Explore ideas" for multi-city. */}
+        {mounted && (buildMode === 'agent' || (buildMode === 'ai' && tripMode === 'single' && (places.length > 0 || skippedSaves))) && (<>
           <div className="bg-white border border-[#E5E5E5] rounded-lg overflow-hidden mb-4">
             {/* Chat messages */}
             <div ref={agentChatRef} className="max-h-80 overflow-y-auto p-4 space-y-3">
               {agentMessages.length === 0 && (
                 <div className="text-center py-6">
-                  <p className="text-sm text-[#0A0A0A] mb-2">Tell me what kind of trip you want!</p>
-                  <p className="text-xs text-[#6B6B6B] mb-4">Describe your vibe, interests, or just say "plan it" and I'll build your whole trip.</p>
+                  {places.length > 0 ? (
+                    <>
+                      <p className="text-sm text-[#0A0A0A] mb-2">Want Mapture to fill in the rest? ✨</p>
+                      <p className="text-xs text-[#6B6B6B] mb-4">I'll build around your saves, or we can talk through the vibe first.</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-[#0A0A0A] mb-2">Tell me what kind of trip you want!</p>
+                      <p className="text-xs text-[#6B6B6B] mb-4">Describe your vibe, interests, or just say "plan it" and I'll build your whole trip.</p>
+                    </>
+                  )}
                   <div className="flex flex-wrap gap-2 justify-center">
-                    {[
-                      'Urban sightseeing with shopping',
-                      'Foodie trip — best local eats',
-                      'Chill beaches and sunset spots',
-                      'Just plan the whole thing for me',
-                    ].map(suggestion => (
+                    {(places.length > 0
+                      ? [
+                          'Build it from my saved places',
+                          'Foodie trip — best local eats',
+                          'Chill beaches and sunset spots',
+                        ]
+                      : [
+                          'Urban sightseeing with shopping',
+                          'Foodie trip — best local eats',
+                          'Chill beaches and sunset spots',
+                          'Just plan the whole thing for me',
+                        ]
+                    ).map(suggestion => (
                       <button
                         key={suggestion}
                         onClick={() => handleAgentSend(suggestion)}
@@ -1578,8 +1824,67 @@ export default function Home() {
         </>)}
       </div>
 
-      {/* Extracted places */}
-      {places.length > 0 && (
+      {/* Not planning a trip yet — Beli-style save with no trip context required.
+          Files into the per-city Inbox (same mechanism as the iOS share-target) so
+          it's waiting whenever the user does start planning. */}
+      {mounted && (
+        <div className="w-full max-w-2xl mt-6 pt-6 border-t border-[#EFEFEF]">
+          {!showSaveForLater ? (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-sm font-medium text-[#0A0A0A] flex items-center gap-1.5">
+                  <Heart size={13} strokeWidth={2} className="text-[#D14343] fill-[#D14343]" /> Not planning a trip yet?
+                </p>
+                <p className="text-xs text-[#6B6B6B] mt-0.5">Just save it for later — restaurants, activities, hotels, anything you want to remember.</p>
+              </div>
+              <button
+                onClick={() => setShowSaveForLater(true)}
+                className="text-xs font-medium text-[#D14343] hover:text-[#B23838] border border-[#E5E5E5] hover:border-[#D14343] rounded-md px-3 py-2 inline-flex items-center gap-1.5 transition-colors shrink-0"
+              >
+                <Plus size={13} strokeWidth={2} /> Save a place
+              </button>
+            </div>
+          ) : saveForLaterStatus === 'done' ? (
+            <div className="flex items-center gap-2 text-sm text-[#0A0A0A]">
+              <Check size={14} strokeWidth={2.5} className="text-[#7A9E7E]" />
+              Saved{saveForLaterCount > 0 ? ` ${saveForLaterCount} place${saveForLaterCount > 1 ? 's' : ''}` : ''} for later ♡
+              <button
+                onClick={() => { setShowSaveForLater(false); setSaveForLaterStatus('idle') }}
+                className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] transition-colors ml-1"
+              >
+                Save another
+              </button>
+            </div>
+          ) : (
+            <div>
+              <p className="text-sm font-medium text-[#0A0A0A] mb-1">Save for later</p>
+              <p className="text-xs text-[#6B6B6B] mb-2">Paste a link, screenshot text, or just describe the place — no trip needed.</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={saveForLaterInput}
+                  onChange={e => setSaveForLaterInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSaveForLater() }}
+                  placeholder="e.g. that ramen spot from the TikTok, https://..."
+                  disabled={saveForLaterStatus === 'saving'}
+                  className="flex-1 bg-white border border-[#E5E5E5] rounded-md px-3 py-2 text-sm outline-none focus:border-[#D14343] transition-colors disabled:opacity-50"
+                />
+                <button
+                  onClick={handleSaveForLater}
+                  disabled={saveForLaterStatus === 'saving' || !saveForLaterInput.trim()}
+                  className="text-sm font-medium text-white bg-[#D14343] hover:bg-[#B23838] rounded-md px-4 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saveForLaterStatus === 'saving' ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Extracted places — shown here for multi-city / other modes; single-city AI
+          mode already shows these inline in the composer's progressive flow above. */}
+      {places.length > 0 && !(buildMode === 'ai' && tripMode === 'single') && (
         <div className="w-full max-w-2xl mt-10">
           <div className="flex items-center justify-between mb-1">
             <p className="text-xs uppercase tracking-widest text-[#6B6B6B]">
@@ -1651,6 +1956,14 @@ export default function Home() {
             </button>
             <p className="text-xs text-[#A3A3A3] text-center mt-2">We’ll put it together. You can tweak anything after.</p>
           </div>
+          {!itinerary && (
+            <button
+              onClick={() => setBuildMode('agent')}
+              className="w-full flex items-center justify-center gap-1.5 mt-3 text-xs text-[#3D5AFE] hover:text-[#2E45D6] font-medium transition-colors"
+            >
+              <Bot size={12} strokeWidth={2} /> or build it by chatting with Mapture →
+            </button>
+          )}
         </div>
       )}
       </>)} {/* end !tripSaved */}
@@ -1672,7 +1985,7 @@ export default function Home() {
 
       {/* Map + Itinerary */}
       {(itinerary?.days || (saved && editableDays.some(d => d.stops.length > 0))) && (
-        <div className="w-full max-w-[1400px] mt-10">
+        <div className="w-full max-w-[1400px] mt-16">
           {/* Share toast */}
           {shareToast && (
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0A0A0A] text-white text-xs px-4 py-2.5 rounded-md shadow-lg z-50">

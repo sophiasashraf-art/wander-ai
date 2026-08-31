@@ -5,6 +5,11 @@ import { geoNaturalEarth1 } from 'd3-geo'
 // 1580x680 box, then nudged by the SVG's own translate(10,10) wrapper.
 export const WORLD_MAP_VIEWBOX = { width: 1600, height: 700 }
 
+// Must match `background-position: center 85px` on .bg-gradient-subtle in
+// globals.css — a fixed pixel offset (not a %) so the map stays anchored
+// just below the header regardless of how tall the page grows.
+export const WORLD_MAP_ANCHOR_Y_PX = 85
+
 const projection = geoNaturalEarth1().fitSize(
   [WORLD_MAP_VIEWBOX.width - 20, WORLD_MAP_VIEWBOX.height - 20],
   { type: 'Sphere' } as any

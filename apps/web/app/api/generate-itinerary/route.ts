@@ -1,8 +1,28 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
+import { Client } from '@googlemaps/google-maps-services-js'
 
 const openai = new OpenAI()
+const maps = new Client()
+
+async function geocodePlace(name: string, destination: string): Promise<{ lat: number; lng: number; address?: string } | null> {
+  try {
+    const res = await maps.findPlaceFromText({
+      params: {
+        input: `${name} ${destination}`,
+        inputtype: 'textquery' as any,
+        fields: ['geometry', 'formatted_address'] as any,
+        key: process.env.GOOGLE_PLACES_API_KEY!,
+      }
+    })
+    const c = res.data.candidates?.[0]
+    if (c?.geometry?.location) {
+      return { lat: c.geometry.location.lat, lng: c.geometry.location.lng, address: c.formatted_address }
+    }
+  } catch {}
+  return null
+}
 
 // Category-aware default hour
 const CATEGORY_HOUR: Record<string, number> = {
@@ -147,7 +167,29 @@ Return valid JSON:
       })
 
       const scratchResult = JSON.parse(scratchRes.choices[0].message.content || '{"days":[]}')
-      return NextResponse.json({ days: scratchResult.days || [] })
+
+      // Geocode every stop — without this the workspace has no coordinates to put
+      // on the map and silently falls back to a map-less list view.
+      const allStopNames = (scratchResult.days || []).flatMap((d: any) => d.stops.map((s: any) => s.name))
+      const geocoded = await Promise.all(
+        allStopNames.map((name: string) => geocodePlace(name, trip?.destination || ''))
+      )
+      const coordMap: Record<string, { lat: number; lng: number; address?: string }> = {}
+      allStopNames.forEach((name: string, i: number) => {
+        if (geocoded[i]) coordMap[name] = geocoded[i]!
+      })
+
+      const geocodedDays = (scratchResult.days || []).map((day: any) => ({
+        ...day,
+        stops: day.stops.map((stop: any) => ({
+          ...stop,
+          lat: coordMap[stop.name]?.lat,
+          lng: coordMap[stop.name]?.lng,
+          address: coordMap[stop.name]?.address,
+        })),
+      }))
+
+      return NextResponse.json({ days: geocodedDays })
     }
 
     // ── Step 1: Assign places to days IN CODE ──
@@ -156,7 +198,7 @@ Return valid JSON:
     const allPool = geocoded.length > 0 ? geocoded : places
 
     // Build a coord lookup so we can re-attach lat/lng to stops later
-    const coordLookup: Record<string, { lat: number; lng: number; opening_hours?: string[]; photo_reference?: string; rating?: number; price_level?: number; address?: string }> = {}
+    const coordLookup: Record<string, { lat: number; lng: number; opening_hours?: string[]; photo_reference?: string; rating?: number; price_level?: number; address?: string; tip?: string; why_recommended?: string; source_url?: string }> = {}
     allPool.forEach((p: any) => {
       if (p.lat && p.lng) coordLookup[p.name.toLowerCase().trim()] = {
         lat: p.lat, lng: p.lng,
@@ -165,6 +207,9 @@ Return valid JSON:
         rating: p.rating,
         price_level: p.price_level,
         address: p.address,
+        tip: p.tip,
+        why_recommended: p.why_recommended,
+        source_url: p.source_url,
       }
     })
 
@@ -360,6 +405,9 @@ Return JSON: {"days": [{"day": 1, "stops": [{"time": "7:00 PM", "name": "...", "
             rating: coords.rating,
             price_level: coords.price_level,
             address: coords.address,
+            tip: coords.tip,
+            why_recommended: coords.why_recommended,
+            source_url: coords.source_url,
           } : {}),
         }
       })

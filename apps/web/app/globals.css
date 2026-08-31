@@ -99,13 +99,23 @@ button, a, input, select, textarea {
   border: 1px solid var(--border);
 }
 
-/* Homepage background: flat white with a faint topographic world map */
+/* Homepage background: flat white with a faint topographic world map.
+   Positioned at a fixed pixel offset (not a %) so it stays anchored just
+   below the header on every page, whether main is short (homepage) or
+   grows tall (a generated trip) — a % offset drifts down with page height
+   and ends up hidden under the real map. Keep 85px in sync with
+   WORLD_MAP_ANCHOR_Y_PX in lib/worldMapProjection.ts.
+   Size caps at 1400px but shrinks to 100% width on narrow (mobile) viewports
+   — a fixed 1400px would only ever show a thin, off-center slice of the
+   world on a phone screen, and the destination pin would land off-screen
+   for most cities. Keep this `min(1400px, 100%)` in sync with
+   WorldMapPin's own IMAGE_WIDTH calc. */
 .bg-gradient-subtle {
   background-color: #FFFFFF;
   background-image: url('/world-contour.svg');
   background-repeat: no-repeat;
-  background-position: center 15%;
-  background-size: 1400px auto;
+  background-position: center 85px;
+  background-size: min(1400px, 100%) auto;
 }
 
 /* Focus ring */
