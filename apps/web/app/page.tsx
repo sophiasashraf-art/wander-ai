@@ -252,30 +252,57 @@ function PlaceListItem({ place, destination, categoryColors, onRemove }: {
 }
 
 // ── Image upload for AI scraper ──
+// Phone screenshots are routinely 2-5MB, which Netlify's serverless functions
+// reject outright (their request body cap is ~6MB, well below what a raw
+// full-res screenshot plus multipart overhead can hit). Downscale to a max
+// dimension before upload — plenty for OCR/vision, and it also cuts OpenAI
+// vision cost/latency.
+async function downscaleImage(file: File, maxDim = 1600, quality = 0.85): Promise<Blob> {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+  const width = Math.round(bitmap.width * scale)
+  const height = Math.round(bitmap.height * scale)
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(bitmap, 0, 0, width, height)
+  bitmap.close()
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+  return blob || file
+}
+
 function ImageUpload({ onExtracted }: { onExtracted: (text: string) => void }) {
   const [loading, setLoading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [previews, setPreviews] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   async function processFiles(files: File[]) {
     const images = files.filter(f => f.type.startsWith('image/'))
     if (!images.length) return
+    setError(null)
     setPreviews(prev => [...prev, ...images.map(f => URL.createObjectURL(f))])
     setLoading(true)
     try {
       const results = await Promise.all(
         images.map(async file => {
+          const compressed = await downscaleImage(file).catch(() => file)
           const fd = new FormData()
-          fd.append('image', file)
+          fd.append('image', compressed, 'image.jpg')
           const res = await fetch('/api/extract-from-image', { method: 'POST', body: fd })
+          if (!res.ok) throw new Error(`Upload failed (${res.status})`)
           const data = await res.json()
           return data.text?.trim() || ''
         })
       )
       const combined = results.filter(Boolean).join('\n')
       if (combined) onExtracted(combined)
-    } catch {}
+      else setError("Couldn't find any places in that image — try a clearer screenshot.")
+    } catch (e: any) {
+      setError(e.message || 'Something went wrong reading that image — try again.')
+    }
     setLoading(false)
   }
 
@@ -304,7 +331,11 @@ function ImageUpload({ onExtracted }: { onExtracted: (text: string) => void }) {
               <img key={i} src={src} alt="" className="w-10 h-10 object-cover rounded-lg shrink-0" />
             ))}
             <span className="flex items-center gap-1 text-xs text-[#6B6B6B]">
-              {loading ? 'Reading images...' : <><Check size={12} strokeWidth={2.5} className="text-[#7A9E7E]" /> {previews.length} image{previews.length > 1 ? 's' : ''} extracted — click to add more</>}
+              {loading
+                ? 'Reading images...'
+                : error
+                  ? <span className="text-[#D14343]">{error}</span>
+                  : <><Check size={12} strokeWidth={2.5} className="text-[#7A9E7E]" /> {previews.length} image{previews.length > 1 ? 's' : ''} extracted — click to add more</>}
             </span>
           </div>
         ) : (
