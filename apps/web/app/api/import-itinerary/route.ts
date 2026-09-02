@@ -78,7 +78,7 @@ Extract each day with its stops. For each stop include:
 - The exact time if mentioned by the user (e.g. "1:15 PM", "5:00 PM", "9pm" → "9:00 PM"). PRESERVE the user's times exactly — do not change or round them.
 - If NO time is mentioned for a stop, assign a reasonable time based on the activity type (cafes in morning, restaurants at meal times, bars in evening, etc.)
 - The place/activity name (restaurant, attraction, hotel, etc.)
-- The city this stop is in (infer from context if not explicit)
+- city: the actual trip-level city or town this stop is in (infer from context if not explicit) — the level someone would name as their travel destination (e.g. "San Diego", "Paris"). NEVER use a neighborhood, district, or area name here even if that's the only location mentioned (e.g. "La Jolla" or "Coronado" → "San Diego"; "Shibuya" → "Tokyo") — resolve it up to the real city. Getting this wrong causes real damage downstream: stops get incorrectly split into a multi-city trip instead of staying grouped as one destination.
 - A short note if there are specific details
 - tip: practical advice mentioned in the text (e.g. "arrive before 10am, there's a line", "cash only"). Omit if none is mentioned — don't invent one.
 - why_recommended: what makes it stand out per the text — vibe, standout dish, unique feature. Omit if the text gives no real reason.

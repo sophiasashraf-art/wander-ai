@@ -62,6 +62,21 @@ const CATEGORY_EMOJI: Record<string, string> = {
 function categoryEmoji(category: string): string {
   return CATEGORY_EMOJI[(category || '').toLowerCase()] || '📍'
 }
+// Coarser grouping than the raw category — several categories (museum, landmark)
+// read as "Activities" to a user even though they're distinct enum values.
+const CATEGORY_GROUP_ORDER = ['Food', 'Cafés', 'Bars & Nightlife', 'Activities', 'Shopping', 'Nature & Areas', 'Stays', 'Other']
+function categoryGroupLabel(category: string): string {
+  switch ((category || '').toLowerCase()) {
+    case 'restaurant': return 'Food'
+    case 'cafe': return 'Cafés'
+    case 'bar': return 'Bars & Nightlife'
+    case 'shopping': return 'Shopping'
+    case 'neighborhood': case 'park': return 'Nature & Areas'
+    case 'stay': return 'Stays'
+    case 'other': return 'Other'
+    default: return 'Activities' // activity, museum, landmark, anything unrecognized
+  }
+}
 
 // Imperative map control: pans to a hovered stop, and re-fits bounds with
 // left padding equal to the floating panel's current width so markers
@@ -348,6 +363,7 @@ export default function Home() {
   // Progressive homepage flow: destination -> "got anything saved?" -> trip details -> build.
   const [skippedSaves, setSkippedSaves] = useState(false)
   const [showSavesInput, setShowSavesInput] = useState(false)
+  const [quickPaste, setQuickPaste] = useState('')
   const [savedPlacePopup, setSavedPlacePopup] = useState<{ index: number; anchorRect: DOMRect } | null>(null)
   // Standalone "save for later" (Beli-style) — no trip required, files into the Inbox.
   const [showSaveForLater, setShowSaveForLater] = useState(false)
@@ -786,11 +802,16 @@ export default function Home() {
     await supabase.from('trips').update({ destination: label, duration: `${totalDays} days` }).eq('id', forTripId)
   }
 
-  async function handleExtract() {
+  // textOverride lets a caller (e.g. the always-on quick-add box) submit one
+  // snippet at a time without touching the shared `input` textarea state —
+  // each call is independent, so places save one at a time as you paste them,
+  // rather than requiring one big batched paste.
+  async function handleExtract(textOverride?: string) {
+    const text = textOverride ?? input
     // Destination is optional in single mode — AI detects it from the pasted content.
     // Multi-city mode still requires explicit cities since that's a deliberate structured choice.
     const hasDestination = tripMode === 'multi' ? cities.some(c => c.name.trim()) : true
-    if ((!input.trim() && places.length === 0) || !hasDestination) return
+    if ((!text.trim() && places.length === 0) || !hasDestination) return
     const autoDetectDestination = tripMode === 'single' && !destination.trim()
     setLoading(true)
     setSaved(false)
@@ -843,7 +864,7 @@ export default function Home() {
       }
     }
 
-    if (!input.trim()) {
+    if (!text.trim()) {
       // No text to extract, just go straight to generate
       setSaved(true)
       setLoading(false)
@@ -851,7 +872,7 @@ export default function Home() {
     }
 
     // Check if input has URLs — those need scraping via extract-places
-    const hasUrls = /(https?:\/\/[^\s]+)/g.test(input)
+    const hasUrls = /(https?:\/\/[^\s]+)/g.test(text)
 
     if (!hasUrls) {
       // Use import-itinerary for all text input — it preserves any structure/times
@@ -859,7 +880,7 @@ export default function Home() {
       const importRes = await fetch('/api/import-itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: input, tripId: currentTripId, destination: effectiveDestination, duration: effectiveDuration }),
+        body: JSON.stringify({ text, tripId: currentTripId, destination: effectiveDestination, duration: effectiveDuration }),
       })
       const importData = await importRes.json()
       if (importData.days?.length > 0 && importData.userProvidedStructure) {
@@ -897,6 +918,7 @@ export default function Home() {
           await applyAutoDetectedLocation(importData.places, currentTripId!)
         }
         setSaved(true)
+        if (textOverride === undefined) { setInput(''); setShowSavesInput(false) }
         setLoading(false)
         return
       }
@@ -918,6 +940,7 @@ export default function Home() {
           await applyAutoDetectedLocation(importData.places, currentTripId!)
         }
         setSaved(true)
+        if (textOverride === undefined) { setInput(''); setShowSavesInput(false) }
         setLoading(false)
         return
       }
@@ -927,7 +950,7 @@ export default function Home() {
     const res = await fetch('/api/extract-places', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: input, tripId: currentTripId }),
+      body: JSON.stringify({ text, tripId: currentTripId }),
     })
 
     const data = await res.json()
@@ -945,7 +968,18 @@ export default function Home() {
       await applyAutoDetectedLocation(newPlaces, currentTripId!)
     }
     setSaved(true)
+    if (textOverride === undefined) { setInput(''); setShowSavesInput(false) }
     setLoading(false)
+  }
+
+  // Quick-add: submit one paste at a time (a link, a note, a short paragraph) and
+  // clear immediately — save-as-you-go, the same rhythm as picking a search result,
+  // rather than gathering everything into one big paste first.
+  async function handleQuickPaste() {
+    if (!quickPaste.trim() || loading) return
+    const text = quickPaste
+    setQuickPaste('')
+    await handleExtract(text)
   }
 
   // Merge incoming days into existing editableDays, preserving manual stops and their times
@@ -1308,8 +1342,12 @@ export default function Home() {
         Plan your trip, your way.
       </p>
 
-      {/* Only show the build form when not viewing a saved trip */}
-      {!tripSaved && (<>
+      {/* Show the build form whenever there's no itinerary yet — including a trip
+          that was saved for later before ever being built. Without the itinerary
+          check, a "save for later" trip would render nothing at all on reopen:
+          tripSaved hides this, but the workspace below also stays hidden with no
+          itinerary to show. */}
+      {(!tripSaved || !(itinerary?.days?.length > 0)) && (<>
       <div className="w-full max-w-2xl">
 
         <p className="text-sm text-[#6B6B6B] text-center mb-4">
@@ -1422,37 +1460,94 @@ export default function Home() {
                   <Heart size={14} strokeWidth={2} className="text-[#D14343] fill-[#D14343]" />
                   {places.length} save{places.length > 1 ? 's' : ''} added
                 </p>
-                <div className="space-y-2 mb-3 max-h-72 overflow-y-auto">
-                  {places.map((place, i) => (
-                    <div key={i} className="flex items-start gap-2.5 p-3 border border-[#E5E5E5] rounded-lg bg-white group relative">
-                      <span className="text-base leading-none mt-0.5 shrink-0">{categoryEmoji(place.category)}</span>
-                      <div className="flex-1 min-w-0">
-                        <button
-                          onClick={e => setSavedPlacePopup({ index: i, anchorRect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
-                          className="text-sm font-medium text-[#0A0A0A] hover:text-[#3D5AFE] truncate text-left transition-colors"
-                          title="View details"
-                        >
-                          {place.name}
-                        </button>
-                        <p className="text-xs text-[#6B6B6B] mt-0.5">{place.city || destination} · <span className="capitalize">{place.category}</span></p>
-                        {place.source_url && (
-                          <a href={place.source_url} target="_blank" rel="noopener noreferrer"
-                            className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] inline-flex items-center gap-1 mt-1 transition-colors">
-                            <LinkIcon size={11} strokeWidth={2} /> {sourceLabel(place.source_url)} ↗
-                          </a>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => setPlaces(prev => prev.filter((_, j) => j !== i))}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 text-lg leading-none shrink-0"
-                        aria-label="Remove place"
-                      >×</button>
-                    </div>
-                  ))}
+                <div className="mb-2">
+                  <PlaceSearch
+                    tripId={tripId || ''}
+                    destination={destination}
+                    onSaved={place => setPlaces(prev => [...prev, place])}
+                    onBeforeSave={ensureTripCreated}
+                  />
                 </div>
-                <button onClick={() => setShowSavesInput(true)} className="text-xs text-[#3D5AFE] hover:text-[#2E45D6] transition-colors">
-                  + Add another
-                </button>
+                {/* Always-on, not a toggle: paste one link/note at a time and it's added
+                    right away, the same rhythm as picking a search result above — save
+                    as you go, instead of gathering everything into one big paste. */}
+                <div className="mb-3 flex items-start gap-2 bg-white border border-[#E5E5E5] rounded-md px-3 py-2.5 focus-within:border-[#3D5AFE] transition-colors">
+                  <LinkIcon size={14} strokeWidth={2} className="text-[#6B6B6B] shrink-0 mt-0.5" />
+                  <textarea
+                    rows={1}
+                    value={quickPaste}
+                    onChange={e => setQuickPaste(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQuickPaste() } }}
+                    placeholder="Paste a TikTok, Reel, link, or note — added right away"
+                    disabled={loading}
+                    className="flex-1 bg-transparent outline-none text-sm text-[#0A0A0A] placeholder:text-[#A3A3A3] disabled:opacity-50 resize-none"
+                  />
+                  <button
+                    onClick={handleQuickPaste}
+                    disabled={loading || !quickPaste.trim()}
+                    className="text-xs font-medium text-[#3D5AFE] hover:text-[#2E45D6] disabled:opacity-40 disabled:cursor-not-allowed shrink-0 mt-0.5"
+                  >
+                    {loading ? 'Adding...' : 'Add'}
+                  </button>
+                </div>
+                <div className="mb-3 -mt-1.5">
+                  <ImageUpload onExtracted={text => setQuickPaste(prev => prev ? `${prev}\n${text}` : text)} />
+                </div>
+                <div className="max-h-96 overflow-y-auto pr-0.5">
+                  {(() => {
+                    const groups: Record<string, { place: any; index: number }[]> = {}
+                    places.forEach((place, i) => {
+                      const label = categoryGroupLabel(place.category)
+                      if (!groups[label]) groups[label] = []
+                      groups[label].push({ place, index: i })
+                    })
+                    const labels = Object.keys(groups).sort(
+                      (a, b) => CATEGORY_GROUP_ORDER.indexOf(a) - CATEGORY_GROUP_ORDER.indexOf(b)
+                    )
+                    return labels.map(label => (
+                      <div key={label} className="mb-4 last:mb-0">
+                        <p className="text-xs font-semibold text-[#6B6B6B] uppercase tracking-wide mb-2">
+                          {categoryEmoji(groups[label][0].place.category)} {label} · {groups[label].length}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {groups[label].map(({ place, index }) => (
+                            <div key={index} className="p-2.5 border border-[#E5E5E5] rounded-lg bg-white group relative">
+                              <button
+                                onClick={e => setSavedPlacePopup({ index, anchorRect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
+                                className="text-xs font-medium text-[#0A0A0A] hover:text-[#3D5AFE] text-left transition-colors leading-snug block w-full pr-3"
+                                title="View details"
+                              >
+                                {place.name}
+                              </button>
+                              {place.source_url && (
+                                <a href={place.source_url} target="_blank" rel="noopener noreferrer"
+                                  className="text-[11px] text-[#3D5AFE] hover:text-[#2E45D6] inline-flex items-center gap-0.5 mt-1 transition-colors truncate max-w-full">
+                                  <LinkIcon size={9} strokeWidth={2} className="shrink-0" /> <span className="truncate">{sourceLabel(place.source_url)}</span>
+                                </a>
+                              )}
+                              <button
+                                onClick={() => setPlaces(prev => prev.filter((_, j) => j !== index))}
+                                className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 text-sm leading-none"
+                                aria-label="Remove place"
+                              >×</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  })()}
+                </div>
+                <div className="flex items-center justify-end gap-3 flex-wrap">
+                  {tripSaved ? (
+                    <p className="text-xs text-[#7A9E7E] font-medium inline-flex items-center gap-1">
+                      <Check size={12} strokeWidth={2.5} /> Saved — find it in your trips anytime
+                    </p>
+                  ) : (
+                    <button onClick={handleSaveTrip} className="text-xs text-[#6B6B6B] hover:text-[#0A0A0A] transition-colors">
+                      Save for later — plan another time →
+                    </button>
+                  )}
+                </div>
                 {savedPlacePopup && places[savedPlacePopup.index] && (
                   <PlacePopup
                     stop={places[savedPlacePopup.index]}
@@ -1497,7 +1592,7 @@ export default function Home() {
                   </button>
                   {inputTab === 'ai' && (
                     <button
-                      onClick={handleExtract}
+                      onClick={() => handleExtract()}
                       disabled={loading || !input.trim()}
                       className="btn-primary text-sm py-2 px-4 rounded-md inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -1582,7 +1677,7 @@ export default function Home() {
         {/* Old CTA — multi-city keeps the original extract/generate button */}
         {mounted && buildMode === 'ai' && tripMode === 'multi' && (<>
           <button
-            onClick={handleExtract}
+            onClick={() => handleExtract()}
             disabled={loading || (!input.trim() && places.length === 0) || !cities.some(c => c.name.trim())}
             className="group w-full py-4 btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none inline-flex items-center justify-center gap-1.5"
           >

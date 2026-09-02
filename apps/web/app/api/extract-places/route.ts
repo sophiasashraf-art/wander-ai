@@ -8,6 +8,14 @@ const openai = new OpenAI()
 const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! })
 const maps = new Client()
 
+function platformLabel(url: string): string {
+  const host = (() => { try { return new URL(url).hostname } catch { return '' } })()
+  if (host.includes('tiktok.com')) return 'TikTok'
+  if (host.includes('instagram.com')) return 'Instagram'
+  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'YouTube'
+  return host.replace('www.', '') || 'a link'
+}
+
 function extractUrls(text: string): string[] {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const matches = text.match(urlRegex) || []
@@ -113,6 +121,8 @@ Don't invent tips, reasons, or source URLs that aren't supported by the content 
 Category must be one of: restaurant | bar | activity | neighborhood | stay | cafe | other
 - Use "bar" for cocktail bars, pubs, lounges, clubs, and nightlife venues — not "activity".
 
+city: the actual trip-level city or town this place is in — the level someone would name as their travel destination (e.g. "San Diego", "Paris", "Tokyo"). NEVER put a neighborhood, district, borough, or area name here, even if that's the only location mentioned in the content — resolve it up to the real city it belongs to (e.g. "La Jolla" or "Coronado" → "San Diego"; "Shibuya" or "Shimokitazawa" → "Tokyo"; "Le Marais" → "Paris"). If a place's neighborhood is worth naming, put it in the description instead. Getting this wrong causes real damage downstream: places get incorrectly split into a multi-city trip instead of staying grouped as one destination.
+
 Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "category": "restaurant|bar|activity|neighborhood|stay|cafe|other", "city": "...", "description": "...", "tip": "...", "why_recommended": "...", "source_url": "..."}]}`,
       }, {
         role: 'user',
@@ -127,6 +137,18 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
     const singleUrl = urls.length === 1 ? urls[0] : undefined
     if (singleUrl) {
       result.places = result.places.map((p: any) => ({ ...p, source_url: p.source_url || singleUrl }))
+    }
+
+    // A link that scraped fine but named no identifiable place (e.g. a TikTok whose
+    // caption is just emoji) would otherwise vanish with no feedback. Keep the link
+    // itself as a placeholder save rather than silently dropping it.
+    if (result.places.length === 0 && singleUrl) {
+      result.places = [{
+        name: `Saved from ${platformLabel(singleUrl)}`,
+        category: 'other',
+        description: "Mapture couldn't identify a specific place in this link — open it to see what it was, or edit the name yourself.",
+        source_url: singleUrl,
+      }]
     }
 
     // Enrich all places with real coordinates from Google Places
