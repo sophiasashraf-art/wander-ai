@@ -103,6 +103,120 @@ function parseMin(t: string): number {
   if (m[3].toUpperCase() === 'AM' && h === 12) h = 0
   return h * 60 + min
 }
+function fmtMin(mins: number): string {
+  const total = Math.round(mins)
+  const h = Math.floor(total / 60) % 24
+  const m = ((total % 60) + 60) % 60
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`
+}
+
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371
+  const dLat = (b.lat - a.lat) * Math.PI / 180
+  const dLng = (b.lng - a.lng) * Math.PI / 180
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(s))
+}
+
+// Meal/nightlife stops have hard time windows (breakfast is breakfast) so their
+// clock times stay fixed as route anchors. Everything else (museums, shopping,
+// parks, landmarks...) has real flexibility in when it happens — so instead of
+// trusting a category-default hour that ignores where the place actually is,
+// insert each one wherever it adds the least extra travel between anchors. This
+// is what stops a day from bouncing between neighborhoods: same-day stops are
+// already geographically close (see the day-bucketing fix above), but without
+// this pass their assigned times — and therefore visiting order — were still
+// arbitrary relative to each other.
+const DAY_START_FLOOR = 7 * 60 + 30  // 7:30 AM — don't route a flexible stop earlier than this
+const DAY_END_CAP = 22 * 60 + 30     // 10:30 PM — don't route one later than this
+
+function routeStopsForDay(stops: any[]): any[] {
+  const isAnchor = (s: any) => ['cafe', 'coffee', 'bakery', 'breakfast', 'brunch', 'restaurant', 'bar', 'pub', 'nightlife', 'club'].includes((s.category || '').toLowerCase())
+  const hasCoords = (s: any) => typeof s.lat === 'number' && typeof s.lng === 'number'
+
+  const anchors = stops.filter(isAnchor).sort((a, b) => parseMin(a.time) - parseMin(b.time))
+  const flexible = stops.filter(s => !isAnchor(s))
+  if (flexible.filter(hasCoords).length === 0) return stops // nothing to route
+
+  let route: any[]
+  if (anchors.length === 0) {
+    // No meal stops to anchor around — chain everything nearest-neighbor from
+    // whichever stop was originally earliest, keep the original times' sequence.
+    const sorted = [...flexible].sort((a, b) => parseMin(a.time) - parseMin(b.time))
+    const withCoords = sorted.filter(hasCoords)
+    const withoutCoords = sorted.filter(s => !hasCoords(s))
+    if (withCoords.length < 2) return stops
+    const chained: any[] = [withCoords[0]]
+    const remaining = [...withCoords.slice(1)]
+    while (remaining.length) {
+      const last = chained[chained.length - 1]
+      let bestIdx = 0, bestDist = Infinity
+      remaining.forEach((s, i) => {
+        const d = haversineKm(last, s)
+        if (d < bestDist) { bestDist = d; bestIdx = i }
+      })
+      chained.push(remaining.splice(bestIdx, 1)[0])
+    }
+    const times = sorted.map(s => s.time)
+    return [...chained.map((s, i) => ({ ...s, time: times[i] })), ...withoutCoords]
+  }
+
+  // Cheapest-insertion: for each flexible stop, find the position between two
+  // consecutive route stops (or before the first / after the last) that adds
+  // the least extra distance, and insert it there.
+  route = [...anchors]
+  for (const stop of flexible) {
+    if (!hasCoords(stop)) { route.push(stop); continue }
+    let bestPos = route.length
+    let bestCost = Infinity
+    for (let i = 0; i <= route.length; i++) {
+      const prev = route[i - 1]
+      const next = route[i]
+      const prevOk = prev && hasCoords(prev)
+      const nextOk = next && hasCoords(next)
+      let cost = 0
+      if (prevOk && nextOk) cost = haversineKm(prev, stop) + haversineKm(stop, next) - haversineKm(prev, next)
+      else if (prevOk) cost = haversineKm(prev, stop)
+      else if (nextOk) cost = haversineKm(stop, next)
+      if (cost < bestCost) { bestCost = cost; bestPos = i }
+    }
+    route.splice(bestPos, 0, stop)
+  }
+
+  // Assign times: walk the route, and for each run of consecutive flexible
+  // stops between two anchors (or a boundary), space them evenly across the gap.
+  let i = 0
+  while (i < route.length) {
+    if (isAnchor(route[i])) { i++; continue }
+    let j = i
+    while (j < route.length && !isAnchor(route[j])) j++
+    const prevTime = i > 0 ? parseMin(route[i - 1].time) : null
+    const nextTime = j < route.length ? parseMin(route[j].time) : null
+    const runLen = j - i
+    for (let k = 0; k < runLen; k++) {
+      let assigned: number
+      if (prevTime !== null && nextTime !== null && nextTime > prevTime) {
+        assigned = prevTime + (nextTime - prevTime) * (k + 1) / (runLen + 1)
+      } else if (prevTime !== null) {
+        // No next anchor to bound this run (trailing stops after the last meal) —
+        // space by up to 90min but compress toward DAY_END_CAP if there isn't
+        // room, rather than marching unboundedly into the middle of the night.
+        const span = Math.max(DAY_END_CAP - prevTime, 30 * runLen)
+        const step = Math.min(90, span / (runLen + 1))
+        assigned = Math.min(prevTime + step * (k + 1), DAY_END_CAP)
+      } else if (nextTime !== null) {
+        const span = Math.max(nextTime - DAY_START_FLOOR, 30 * runLen)
+        const step = Math.min(90, span / (runLen + 1))
+        assigned = Math.max(nextTime - step * (runLen - k), DAY_START_FLOOR)
+      } else {
+        assigned = parseMin(route[i + k].time) || defaultHour(route[i + k].category) * 60
+      }
+      route[i + k] = { ...route[i + k], time: fmtMin(assigned) }
+    }
+    i = j
+  }
+  return route
+}
 
 export async function POST(req: Request) {
   try {
@@ -215,40 +329,39 @@ Return valid JSON:
 
     const pool = allPool.slice(0, config.stopsPerDay * numDays)
 
-    // Detect geographic spread
     const geocodedPool = pool.filter((p: any) => p.lat && p.lng)
-    const lngs = geocodedPool.map((p: any) => p.lng)
-    const lats = geocodedPool.map((p: any) => p.lat)
-    const lngSpread = geocodedPool.length > 1 ? Math.max(...lngs) - Math.min(...lngs) : 0
-    const latSpread = geocodedPool.length > 1 ? Math.max(...lats) - Math.min(...lats) : 0
-    const isSpread = lngSpread > 0.3 || latSpread > 0.3
+    const ungeocodedPool = pool.filter((p: any) => !(p.lat && p.lng))
 
     // Build day buckets
     const buckets: any[][] = Array.from({ length: numDays }, () => [])
 
-    if (isSpread && geocodedPool.length >= numDays) {
-      // Multi-city / spread: cluster by proximity using a simple greedy nearest-neighbor per day
-      // Sort by lng to get a rough geographic ordering, then assign in blocks
-      const sorted = [...pool].sort((a: any, b: any) => (a.lng || 0) - (b.lng || 0))
+    if (geocodedPool.length > 0) {
+      // Geo-cluster always, not just for multi-city-scale trips — a compact single
+      // city still has real neighborhoods, and a category-based round robin (the
+      // old approach here) ignored location entirely, so a day could easily end up
+      // with a cafe on one side of town and dinner back near it, with a museum
+      // across the city in between. Sort along whichever axis actually separates
+      // the places (a city that's long north-south should cluster by lat, not
+      // lng, or every day-block would span the full width) and slice into
+      // contiguous day-sized blocks.
+      const lngs = geocodedPool.map((p: any) => p.lng)
+      const lats = geocodedPool.map((p: any) => p.lat)
+      const lngSpread = geocodedPool.length > 1 ? Math.max(...lngs) - Math.min(...lngs) : 0
+      const latSpread = geocodedPool.length > 1 ? Math.max(...lats) - Math.min(...lats) : 0
+      const sortKey: 'lat' | 'lng' = latSpread > lngSpread ? 'lat' : 'lng'
+      const sorted = [...geocodedPool].sort((a: any, b: any) => a[sortKey] - b[sortKey])
       sorted.forEach((p, i) => {
         const day = Math.min(Math.floor(i * numDays / sorted.length), numDays - 1)
         if (buckets[day].length < config.stopsPerDay) buckets[day].push(p)
       })
-    } else {
-      // Same city: distribute evenly across days, mixing categories
-      // Sort by category so we interleave different types, then round-robin across days
-      const CATEGORY_ORDER = ['cafe', 'breakfast', 'activity', 'museum', 'landmark', 'park', 'shopping', 'restaurant', 'bar', 'other']
-      const sorted = [...pool].sort((a: any, b: any) => {
-        const ai = CATEGORY_ORDER.findIndex(c => (a.category || '').toLowerCase().includes(c))
-        const bi = CATEGORY_ORDER.findIndex(c => (b.category || '').toLowerCase().includes(c))
-        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
-      })
+    }
 
-      // Distribute round-robin: place 0→day0, place 1→day1, ..., place N→day(N%numDays)
-      // This guarantees even spread regardless of category distribution
+    // Places with no coordinates can't be geo-clustered — spread them round-robin
+    // across whichever days still have room (rare: only happens if Places lookup
+    // failed for a place entirely).
+    if (ungeocodedPool.length > 0) {
       let dayIdx = 0
-      for (const p of sorted) {
-        // Find next day that still has room
+      for (const p of ungeocodedPool) {
         let attempts = 0
         while (buckets[dayIdx].length >= config.stopsPerDay && attempts < numDays) {
           dayIdx = (dayIdx + 1) % numDays
@@ -382,14 +495,26 @@ Return JSON: {"days": [{"day": 1, "stops": [{"time": "7:00 PM", "name": "...", "
         const idx = finalDays.findIndex((d: any) => d.day === filled.day)
         if (idx === -1) return
         const existingNames = new Set(finalDays[idx].stops.map((s: any) => s.name.toLowerCase().trim()))
-        const newStops = (filled.stops || []).filter((s: any) => !existingNames.has((s.name || '').toLowerCase().trim()))
+        let newStops = (filled.stops || []).filter((s: any) => !existingNames.has((s.name || '').toLowerCase().trim()))
+        // GPT is asked to "aim for stopsPerDay total" but nothing enforced that —
+        // it would routinely suggest more than needed, piling days up well past
+        // the target (and, once routed, past reasonable hours). Cap it here:
+        // keep an evening suggestion first if this day needed one, then fill the
+        // rest of the remaining room in the order GPT returned them.
+        const room = Math.max(0, config.stopsPerDay - finalDays[idx].stops.length)
+        const neededEvening = daysNeedingEvening.some((e: any) => e.day === filled.day)
+        if (neededEvening) {
+          const eveningIdx = newStops.findIndex((s: any) => parseMin(s.time) >= 17 * 60)
+          if (eveningIdx > 0) newStops = [newStops[eveningIdx], ...newStops.filter((_: any, i: number) => i !== eveningIdx)]
+        }
+        newStops = newStops.slice(0, room)
         finalDays[idx] = { ...finalDays[idx], stops: [...finalDays[idx].stops, ...newStops] }
       })
     }
 
-    // ── Step 5: Sort stops chronologically, nudge same-category apart, re-attach coords ──
+    // ── Step 5: Sort stops chronologically, route them geographically, re-attach coords ──
     finalDays = finalDays.map((day: any) => {
-      const stops = day.stops.map((s: any) => {
+      let stops = day.stops.map((s: any) => {
         const coords = coordLookup[s.name.toLowerCase().trim()]
         const rawTime = s.time || fmtHour(defaultHour(s.category))
         const clampedTime = clampToWindow(rawTime, s.category)
@@ -425,15 +550,18 @@ Return JSON: {"days": [{"day": 1, "stops": [{"time": "7:00 PM", "name": "...", "
 
       stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
 
+      // Reorder + retime the flexible (non-meal) stops around the fixed meal
+      // anchors so the day's physical route doesn't backtrack across the city —
+      // this is what actually fixes the zigzag; the plain time sort above just
+      // establishes the anchors' order for it to route around.
+      stops = routeStopsForDay(stops)
+
       for (let i = 1; i < stops.length; i++) {
         if (stops[i].category === stops[i-1].category) {
           const prev = parseMin(stops[i-1].time)
           const curr = parseMin(stops[i].time)
           if (curr <= prev + 30) {
-            const newMin = prev + 90
-            const h = Math.floor(newMin / 60) % 24
-            const m = newMin % 60
-            stops[i] = { ...stops[i], time: `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h < 12 ? 'AM' : 'PM'}` }
+            stops[i] = { ...stops[i], time: fmtMin(prev + 90) }
           }
         }
       }

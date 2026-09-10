@@ -18,6 +18,12 @@ export default function CityAutocomplete({ value, onChange, placeholder = 'City 
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionRef = useRef(crypto.randomUUID())
+  // Selecting a suggestion sets `query` to the picked description before the
+  // parent's `value` prop has caught up (onChange fires after an async
+  // place-details fetch) — without this, the search effect below sees
+  // query !== value for a moment and re-fetches/reopens the dropdown right
+  // after a correct selection, making it look like the click didn't work.
+  const justSelectedRef = useRef(false)
 
   useEffect(() => { setQuery(value) }, [value])
 
@@ -28,6 +34,12 @@ export default function CityAutocomplete({ value, onChange, placeholder = 'City 
   }
 
   useEffect(() => {
+    if (justSelectedRef.current) {
+      justSelectedRef.current = false
+      setSuggestions([])
+      setOpen(false)
+      return
+    }
     if (!query.trim() || query.length < 2 || query === value) {
       setSuggestions([])
       setOpen(false)
@@ -53,6 +65,7 @@ export default function CityAutocomplete({ value, onChange, placeholder = 'City 
   async function handleSelect(prediction: any) {
     const desc = prediction.description || ''
     const token = sessionRef.current
+    justSelectedRef.current = true
     setQuery(desc)
     setOpen(false)
     setSuggestions([])
