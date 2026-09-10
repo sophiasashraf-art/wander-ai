@@ -69,6 +69,105 @@ export interface VerifiedPlace {
   photo_reference: string | null
 }
 
+interface CityRegion {
+  lat: number
+  lng: number
+  sw: { lat: number; lng: number }
+  ne: { lat: number; lng: number }
+}
+
+const cityRegionCache = new Map<string, CityRegion | null>()
+
+// Resolve a destination string ("San Francisco", "Costa Rica") to a center +
+// viewport. findPlaceFromText on its own returns the single globally "best"
+// name match with no geographic constraint, so a generic name ("Blue Bottle",
+// "Tartine") could resolve to a more prominent branch in another city — this is
+// how a San Francisco itinerary ended up with a cafe pinned in LA. The viewport
+// self-scales: a city's is tens of km, a country's is continental, so the guard
+// below is strict for cities and effectively a no-op for whole-country trips.
+async function resolveCityRegion(destination: string): Promise<CityRegion | null> {
+  const key = destination.trim().toLowerCase()
+  if (!key) return null
+  if (cityRegionCache.has(key)) return cityRegionCache.get(key)!
+  let region: CityRegion | null = null
+  try {
+    // The Geocoding API isn't enabled on this project — only Places — so resolve
+    // the destination with findPlaceFromText. A place query for "San Francisco"
+    // still comes back with a geometry.viewport, and it self-scales: a city's is
+    // ~10km, a country's is continental (so the guard below no-ops for those).
+    const res = await maps.findPlaceFromText({
+      params: {
+        input: destination,
+        inputtype: 'textquery' as any,
+        fields: ['geometry', 'name'] as any,
+        key: process.env.GOOGLE_PLACES_API_KEY!,
+      },
+    })
+    const c = res.data.candidates?.[0]
+    const loc = c?.geometry?.location
+    if (loc) {
+      const vp = c!.geometry!.viewport
+      region = {
+        lat: loc.lat,
+        lng: loc.lng,
+        sw: vp?.southwest ?? { lat: loc.lat - 0.3, lng: loc.lng - 0.3 },
+        ne: vp?.northeast ?? { lat: loc.lat + 0.3, lng: loc.lng + 0.3 },
+      }
+    }
+  } catch (e: any) {
+    console.error('resolveCityRegion failed for', destination, e?.response?.data || e?.message)
+  }
+  cityRegionCache.set(key, region)
+  return region
+}
+
+// Accept a resolved place if it's inside the destination viewport expanded by
+// 50% each side (headroom for legit suburbs / day-trip spots), rejecting the
+// clearly-wrong-city matches.
+function withinRegion(lat: number, lng: number, region: CityRegion): boolean {
+  const latPad = (region.ne.lat - region.sw.lat) * 0.5
+  const lngPad = (region.ne.lng - region.sw.lng) * 0.5
+  if (lat < region.sw.lat - latPad || lat > region.ne.lat + latPad) return false
+  if (region.ne.lng < region.sw.lng) return true // viewport crosses the antimeridian — skip lng check
+  return lng >= region.sw.lng - lngPad && lng <= region.ne.lng + lngPad
+}
+
+function biasParam(region: CityRegion | null): string | undefined {
+  if (!region) return undefined
+  return `rectangle:${region.sw.lat},${region.sw.lng}|${region.ne.lat},${region.ne.lng}`
+}
+
+// Lightweight geocode: coords + address only, destination-biased and
+// region-guarded. For itinerary generation where the extra placeDetails round
+// trip verifyPlace does would be fetched and thrown away.
+export async function geocodePlace(
+  name: string,
+  destination?: string | null,
+): Promise<{ lat: number; lng: number; address: string | null } | null> {
+  try {
+    const region = destination ? await resolveCityRegion(destination) : null
+    const params: any = {
+      input: [name, destination].filter(Boolean).join(' '),
+      inputtype: 'textquery',
+      fields: ['geometry', 'formatted_address'],
+      key: process.env.GOOGLE_PLACES_API_KEY!,
+    }
+    const bias = biasParam(region)
+    if (bias) params.locationbias = bias
+    const res = await maps.findPlaceFromText({ params })
+    const c = res.data.candidates?.[0]
+    if (!c?.geometry?.location) return null
+    const { lat, lng } = c.geometry.location
+    if (region && !withinRegion(lat, lng, region)) {
+      console.warn(`geocodePlace: "${name}" -> ${lat},${lng} is outside ${destination} — rejecting`)
+      return null
+    }
+    return { lat, lng, address: c.formatted_address || null }
+  } catch {
+    return null
+  }
+}
+
 // The richest of the three enrichment functions this replaces (import-itinerary's):
 // findPlaceFromText to locate the place, then placeDetails for the fields Places
 // only returns on the detail lookup. extract-places/inbox previously requested
@@ -77,17 +176,25 @@ export interface VerifiedPlace {
 // this fixes that for every caller at once.
 export async function verifyPlace(name: string, destination?: string | null): Promise<VerifiedPlace | null> {
   try {
+    const region = destination ? await resolveCityRegion(destination) : null
     const searchQuery = [name, destination].filter(Boolean).join(' ')
-    const findRes = await maps.findPlaceFromText({
-      params: {
-        input: searchQuery,
-        inputtype: 'textquery' as any,
-        fields: ['place_id', 'geometry', 'name', 'formatted_address'] as any,
-        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
+    const findParams: any = {
+      input: searchQuery,
+      inputtype: 'textquery',
+      fields: ['place_id', 'geometry', 'name', 'formatted_address'],
+      key: process.env.GOOGLE_PLACES_API_KEY!,
+    }
+    const bias = biasParam(region)
+    if (bias) findParams.locationbias = bias
+    const findRes = await maps.findPlaceFromText({ params: findParams })
     const candidate = findRes.data.candidates?.[0]
     if (!candidate?.geometry?.location || !candidate.place_id) return null
+    // Reject a name match that landed in the wrong city entirely (see
+    // resolveCityRegion) rather than saving a place with a misleading pin.
+    if (region && !withinRegion(candidate.geometry.location.lat, candidate.geometry.location.lng, region)) {
+      console.warn(`verifyPlace: "${name}" -> ${candidate.geometry.location.lat},${candidate.geometry.location.lng} is outside ${destination} — rejecting`)
+      return null
+    }
 
     let rating: number | null = null
     let price_level: number | null = null

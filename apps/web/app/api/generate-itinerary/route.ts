@@ -1,28 +1,9 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
-import { Client } from '@googlemaps/google-maps-services-js'
+import { geocodePlace } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
-const maps = new Client()
-
-async function geocodePlace(name: string, destination: string): Promise<{ lat: number; lng: number; address?: string } | null> {
-  try {
-    const res = await maps.findPlaceFromText({
-      params: {
-        input: `${name} ${destination}`,
-        inputtype: 'textquery' as any,
-        fields: ['geometry', 'formatted_address'] as any,
-        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
-    const c = res.data.candidates?.[0]
-    if (c?.geometry?.location) {
-      return { lat: c.geometry.location.lat, lng: c.geometry.location.lng, address: c.formatted_address }
-    }
-  } catch {}
-  return null
-}
 
 // Category-aware default hour
 const CATEGORY_HOUR: Record<string, number> = {
