@@ -8,3 +8,12 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+# Netlify's "set as primary domain" only redirects between your own custom
+# domains (e.g. www <-> apex) — it does not touch the original *.netlify.app
+# URL, which keeps serving the site directly unless told otherwise.
+[[redirects]]
+  from = "https://frabjous-narwhal-984ec8.netlify.app/*"
+  to = "https://mymapture.com/:splat"
+  status = 301
+  force = true
