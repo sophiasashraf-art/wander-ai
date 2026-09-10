@@ -1,62 +1,29 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
-import { Client } from '@googlemaps/google-maps-services-js'
+import { verifyPlace, upsertPlace, VerifiedPlace } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
-const maps = new Client()
 
+// Wraps the shared verifyPlace() but keeps this file's existing downstream shape
+// (coordMap / redistribution / response `places` all read p.lat, p.address, etc.
+// directly) so nothing past this function needs to change. Keeps the raw
+// VerifiedPlace on `_verified` so the persistence step below can reuse it
+// without a second round of Places API calls.
 async function enrichWithCoordinates(place: any, destination: string): Promise<any> {
-  try {
-    // Step 1: find the place to get a place_id
-    const locationHint = place.city || destination
-    const findRes = await maps.findPlaceFromText({
-      params: {
-        input: `${place.name} ${locationHint}`,
-        inputtype: 'textquery' as any,
-        fields: ['place_id', 'geometry', 'name'] as any,
-        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
-    const candidate = findRes.data.candidates?.[0]
-    if (!candidate?.geometry?.location) return place
-
-    const enriched: any = {
-      ...place,
-      lat: candidate.geometry.location.lat,
-      lng: candidate.geometry.location.lng,
-    }
-
-    // Step 2: fetch opening hours + photo reference if we have a place_id
-    if (candidate.place_id) {
-      try {
-        const detailRes = await maps.placeDetails({
-          params: {
-            place_id: candidate.place_id,
-            key: process.env.GOOGLE_PLACES_API_KEY!,
-            fields: ['opening_hours', 'photos', 'rating', 'price_level', 'formatted_address'] as any,
-          }
-        })
-        const result = detailRes.data.result
-        const hours = result?.opening_hours
-        if (hours?.weekday_text?.length) {
-          enriched.opening_hours = hours.weekday_text
-          enriched.open_now = hours.open_now
-        }
-        // Store first photo reference for the popup
-        const photoRef = (result as any)?.photos?.[0]?.photo_reference
-        if (photoRef) enriched.photo_reference = photoRef
-        if (result?.rating) enriched.rating = result.rating
-        if ((result as any)?.price_level !== undefined) enriched.price_level = (result as any).price_level
-        if (result?.formatted_address) enriched.address = result.formatted_address
-      } catch {
-        // best-effort, don't fail enrichment
-      }
-    }
-
-    return enriched
-  } catch {}
-  return place
+  const verified = await verifyPlace(place.name, place.city || destination)
+  if (!verified) return place
+  return {
+    ...place,
+    lat: verified.lat,
+    lng: verified.lng,
+    opening_hours: verified.opening_hours || undefined,
+    photo_reference: verified.photo_reference || undefined,
+    rating: verified.rating || undefined,
+    price_level: verified.price_level ?? undefined,
+    address: verified.formatted_address || undefined,
+    _verified: verified as VerifiedPlace,
+  }
 }
 
 export async function POST(req: Request) {
@@ -210,41 +177,24 @@ Return valid JSON only:
       }))
     })) || []
 
-    // Save places to Supabase
+    // Save places to Supabase — real google_place_id dedup via the shared helper,
+    // reusing the Places lookup already done in enrichWithCoordinates above.
     if (tripId) {
-      const placesToInsert = enriched
-        .filter((p: any) => p.lat && p.lng)
-        .map((p: any) => ({
-          name: p.name,
-          category: p.category,
-          city: p.city || destination,
-          description: p.address || '',
-          lat: p.lat,
-          lng: p.lng,
-          trip_id: tripId,
-          opening_hours: p.opening_hours || null,
-          photo_reference: p.photo_reference || null,
-          rating: p.rating || null,
-          price_level: p.price_level ?? null,
-          tip: p.tip || null,
-          why_recommended: p.why_recommended || null,
-        }))
-
-      if (placesToInsert.length > 0) {
-        // Avoid duplicates
-        const { data: existing } = await supabase
-          .from('places')
-          .select('name')
-          .eq('trip_id', tripId)
-        const existingNames = new Set((existing || []).map((p: any) => p.name.toLowerCase()))
-        const newPlaces = placesToInsert.filter(
-          (p: any) => !existingNames.has(p.name.toLowerCase())
-        )
-        if (newPlaces.length > 0) {
-          const { error: insertError } = await supabase.from('places').insert(newPlaces)
-          if (insertError) console.error('places insert failed:', insertError)
-        }
-      }
+      const rawInput = text.slice(0, 2000)
+      await Promise.all(
+        enriched
+          .filter((p: any) => p.lat && p.lng)
+          .map((p: any) => upsertPlace({
+            trip_id: tripId,
+            name: p.name,
+            category: p.category,
+            city: p.city || destination,
+            tip: p.tip || null,
+            why_recommended: p.why_recommended || null,
+            raw_input: rawInput,
+            source: 'pasted_text',
+          }, p._verified ?? null))
+      )
     }
 
     // If all stops landed on day 1 and other days are empty, the input was an unstructured
@@ -400,20 +350,22 @@ Return valid JSON only:
 
       console.log('redistributed:', redistributed.map((d: any) => `Day ${d.day}: ${d.stops.map((s: any) => s.name).join(', ')}`))
 
+      const responsePlaces = enriched.map(({ _verified, ...rest }: any) => rest)
       return NextResponse.json({
         days: redistributed,
         redistributed: true,
         userProvidedStructure: false,
         startDate: parsed.startDate || null,
-        places: enriched,
+        places: responsePlaces,
       })
     }
 
+    const responsePlaces = enriched.map(({ _verified, ...rest }: any) => rest)
     return NextResponse.json({
       days: daysWithCoords,
       userProvidedStructure: parsed.userProvidedStructure ?? false,
       startDate: parsed.startDate || null,
-      places: enriched,
+      places: responsePlaces,
     })
   } catch (e: any) {
     console.error('ERROR:', e)

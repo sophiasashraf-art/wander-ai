@@ -1,91 +1,9 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
-import { FirecrawlAppV1 as FirecrawlApp } from 'firecrawl'
-import { Client } from '@googlemaps/google-maps-services-js'
+import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
-const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! })
-const maps = new Client()
-
-function platformLabel(url: string): string {
-  const host = (() => { try { return new URL(url).hostname } catch { return '' } })()
-  if (host.includes('tiktok.com')) return 'TikTok'
-  if (host.includes('instagram.com')) return 'Instagram'
-  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'YouTube'
-  return host.replace('www.', '') || 'a link'
-}
-
-function extractUrls(text: string): string[] {
-  const urlRegex = /(https?:\/\/[^\s]+)/g
-  const matches = text.match(urlRegex) || []
-  // Strip already-matched URLs before scanning for bare domains — otherwise this
-  // regex also matches the tail of a URL already captured above (e.g. it'd pull
-  // "tiktok.com/@user/video/123" back out of "https://www.tiktok.com/@user/video/123",
-  // producing a mangled www.-less duplicate that TikTok's oEmbed endpoint rejects.
-  const textWithoutUrls = text.replace(urlRegex, ' ')
-  const bareUrlRegex = /(?<![\/\w])([\w-]+\.[\w-]+(?:\.[\w-]+)*\/[^\s]*)/g
-  const bareMatches = textWithoutUrls.match(bareUrlRegex) || []
-  const withProtocol = bareMatches.map(u => `https://${u}`)
-  return [...new Set([...matches, ...withProtocol])]
-}
-
-// TikTok's video pages are almost entirely client-rendered, so a plain scrape
-// (Firecrawl included) usually comes back empty or with no caption text. TikTok
-// publishes a public oEmbed endpoint specifically for this — no login/JS needed,
-// and its "title" field is the video caption, which is where place names live.
-async function scrapeTikTokOembed(url: string): Promise<string> {
-  try {
-    const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`)
-    if (!res.ok) return ''
-    const data = await res.json()
-    if (!data.title) return ''
-    return `TikTok by ${data.author_name || 'unknown'}: ${data.title}`
-  } catch {
-    return ''
-  }
-}
-
-async function scrapeUrl(url: string): Promise<string> {
-  if (url.includes('tiktok.com')) {
-    const oembed = await scrapeTikTokOembed(url)
-    if (oembed) return oembed
-  }
-  try {
-    const result = await firecrawl.scrapeUrl(url, { formats: ['markdown'] }) as any
-    if (result.markdown) return result.markdown.slice(0, 15000)
-    if (result.content) return result.content.slice(0, 15000)
-  } catch (e) {
-    console.error('Scrape failed for', url)
-  }
-  return ''
-}
-
-async function enrichWithCoordinates(place: any, destination?: string): Promise<any> {
-  try {
-    const searchQuery = [place.name, place.city, destination].filter(Boolean).join(' ')
-    const response = await maps.findPlaceFromText({
-      params: {
-        input: searchQuery,
-        inputtype: 'textquery' as any,
-        fields: ['geometry', 'name', 'formatted_address', 'place_id'] as any,        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
-
-const candidate = response.data.candidates?.[0]
-    if (candidate?.geometry?.location) {
-      return {
-        ...place,
-        lat: candidate.geometry.location.lat,
-        lng: candidate.geometry.location.lng,
-        neighborhood: candidate.formatted_address || null,
-      }
-    }
-  } catch (e: any) {
-    console.error('Google Places failed for', place.name, e?.response?.data || e?.message)
-  }
-  return place
-}
 
 export async function POST(req: Request) {
   try {
@@ -151,45 +69,48 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
       }]
     }
 
-    // Enrich all places with real coordinates from Google Places
-    // Get destination from the trip if available
+    // Get destination from the trip if available, for Places search context
     let destination = ''
     if (tripId) {
       const { data: trip } = await supabase.from('trips').select('destination').eq('id', tripId).single()
       destination = trip?.destination || ''
     }
 
+    const rawInput = text.slice(0, 2000)
+
     const enrichedPlaces = await Promise.all(
-      result.places.map((p: any) => enrichWithCoordinates(p, destination))
+      result.places.map(async (p: any) => {
+        const verified = await verifyPlace(p.name, destination)
+        if (!tripId) {
+          // No trip yet to persist against — just return the enriched shape.
+          return {
+            ...p,
+            lat: verified?.lat ?? null,
+            lng: verified?.lng ?? null,
+            neighborhood: verified?.formatted_address ?? null,
+            rating: verified?.rating ?? null,
+            price_level: verified?.price_level ?? null,
+            opening_hours: verified?.opening_hours ?? null,
+            photo_reference: verified?.photo_reference ?? null,
+          }
+        }
+        const { place } = await upsertPlace({
+          trip_id: tripId,
+          name: p.name,
+          category: p.category,
+          city: p.city,
+          description: p.description,
+          tip: p.tip,
+          why_recommended: p.why_recommended,
+          source_url: p.source_url,
+          raw_input: rawInput,
+          source: 'pasted_text',
+        }, verified)
+        return place
+      })
     )
 
     console.log('enriched places:', enrichedPlaces.map((p: any) => `${p.name}: ${p.lat},${p.lng}`))
-
-if (tripId && enrichedPlaces.length > 0) {
-  // Fetch existing place names for this trip
-  const { data: existing } = await supabase
-    .from('places')
-    .select('name')
-    .eq('trip_id', tripId)
-
-  const existingNames = new Set(
-    (existing || []).map((p: any) => p.name.toLowerCase().trim())
-  )
-
-  // Only insert places that don't already exist
-  const newPlaces = enrichedPlaces.filter(
-    (p: any) => !existingNames.has(p.name.toLowerCase().trim())
-  )
-
-  console.log(`Skipping ${enrichedPlaces.length - newPlaces.length} duplicates, inserting ${newPlaces.length} new places`)
-
-  if (newPlaces.length > 0) {
-    const { error: insertError } = await supabase.from('places').insert(
-      newPlaces.map((p: any) => ({ ...p, trip_id: tripId }))
-    )
-    if (insertError) console.error('places insert failed:', insertError)
-  }
-}
 
     return NextResponse.json({ places: enrichedPlaces })
 

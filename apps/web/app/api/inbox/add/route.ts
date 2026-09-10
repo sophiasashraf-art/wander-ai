@@ -1,91 +1,9 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
-import { FirecrawlAppV1 as FirecrawlApp } from 'firecrawl'
-import { Client } from '@googlemaps/google-maps-services-js'
+import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel } from '../../../../lib/placeIngestion'
 
 const openai = new OpenAI()
-const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! })
-const maps = new Client()
-
-function platformLabel(url: string): string {
-  const host = (() => { try { return new URL(url).hostname } catch { return '' } })()
-  if (host.includes('tiktok.com')) return 'TikTok'
-  if (host.includes('instagram.com')) return 'Instagram'
-  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'YouTube'
-  return host.replace('www.', '') || 'a link'
-}
-
-function extractUrls(text: string): string[] {
-  const urlRegex = /(https?:\/\/[^\s]+)/g
-  const matches = text.match(urlRegex) || []
-  // Strip already-matched URLs before scanning for bare domains — otherwise this
-  // regex also matches the tail of a URL already captured above (e.g. it'd pull
-  // "tiktok.com/@user/video/123" back out of "https://www.tiktok.com/@user/video/123",
-  // producing a mangled www.-less duplicate that TikTok's oEmbed endpoint rejects.
-  const textWithoutUrls = text.replace(urlRegex, ' ')
-  const bareUrlRegex = /(?<![\/\w])([\w-]+\.[\w-]+(?:\.[\w-]+)*\/[^\s]*)/g
-  const bareMatches = textWithoutUrls.match(bareUrlRegex) || []
-  const withProtocol = bareMatches.map(u => `https://${u}`)
-  return [...new Set([...matches, ...withProtocol])]
-}
-
-// TikTok's video pages are almost entirely client-rendered, so a plain scrape
-// (Firecrawl included) usually comes back empty or with no caption text. TikTok
-// publishes a public oEmbed endpoint specifically for this — no login/JS needed,
-// and its "title" field is the video caption, which is where place names live.
-async function scrapeTikTokOembed(url: string): Promise<string> {
-  try {
-    const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`)
-    if (!res.ok) return ''
-    const data = await res.json()
-    if (!data.title) return ''
-    return `TikTok by ${data.author_name || 'unknown'}: ${data.title}`
-  } catch {
-    return ''
-  }
-}
-
-async function scrapeUrl(url: string): Promise<string> {
-  if (url.includes('tiktok.com')) {
-    const oembed = await scrapeTikTokOembed(url)
-    if (oembed) return oembed
-  }
-  try {
-    const result = await firecrawl.scrapeUrl(url, { formats: ['markdown'] }) as any
-    if (result.markdown) return result.markdown.slice(0, 15000)
-    if (result.content) return result.content.slice(0, 15000)
-  } catch (e) {
-    console.error('Scrape failed for', url)
-  }
-  return ''
-}
-
-async function enrichWithCoordinates(place: any): Promise<any> {
-  try {
-    const searchQuery = [place.name, place.city].filter(Boolean).join(' ')
-    const response = await maps.findPlaceFromText({
-      params: {
-        input: searchQuery,
-        inputtype: 'textquery' as any,
-        fields: ['geometry', 'name', 'formatted_address', 'place_id'] as any,
-        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
-    const candidate = response.data.candidates?.[0]
-    if (candidate?.geometry?.location) {
-      return {
-        ...place,
-        lat: candidate.geometry.location.lat,
-        lng: candidate.geometry.location.lng,
-        neighborhood: candidate.formatted_address || null,
-      }
-    }
-  } catch (e: any) {
-    console.error('Google Places failed for', place.name, e?.response?.data || e?.message)
-  }
-  return place
-}
 
 // Shared entry point for the iOS "Save to Mapture" Shortcut: takes whatever text/link
 // was shared, extracts places, and files each one into a per-city inbox trip —
@@ -159,17 +77,19 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
       }]
     }
 
-    const enrichedPlaces = await Promise.all(
-      (result.places || []).map((p: any) => enrichWithCoordinates(p))
-    )
-
-    if (enrichedPlaces.length === 0) {
+    const places = result.places || []
+    if (places.length === 0) {
       return NextResponse.json({ added: [] })
     }
 
+    const rawInput = text.slice(0, 2000)
+    const verifiedPlaces = await Promise.all(
+      places.map(async (p: any) => ({ ...p, _verified: await verifyPlace(p.name, p.city) }))
+    )
+
     // Group by city so each location gets its own inbox bucket
     const byCity = new Map<string, any[]>()
-    for (const p of enrichedPlaces) {
+    for (const p of verifiedPlaces) {
       const city = (p.city || 'Unsorted').trim()
       if (!byCity.has(city)) byCity.set(city, [])
       byCity.get(city)!.push(p)
@@ -198,22 +118,22 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
         trip = newTrip
       }
 
-      const { data: existing } = await supabase
-        .from('places')
-        .select('name')
-        .eq('trip_id', trip!.id)
-      const existingNames = new Set((existing || []).map((p: any) => p.name.toLowerCase().trim()))
+      const upserted = await Promise.all(
+        cityPlaces.map((p: any) => upsertPlace({
+          trip_id: trip!.id,
+          name: p.name,
+          category: p.category,
+          city: p.city,
+          description: p.description,
+          tip: p.tip,
+          why_recommended: p.why_recommended,
+          source_url: p.source_url,
+          raw_input: rawInput,
+          source: 'pasted_text',
+        }, p._verified))
+      )
 
-      const newPlaces = cityPlaces.filter((p: any) => !existingNames.has(p.name.toLowerCase().trim()))
-
-      if (newPlaces.length > 0) {
-        const { error: insertError } = await supabase.from('places').insert(
-          newPlaces.map((p: any) => ({ ...p, trip_id: trip!.id }))
-        )
-        if (insertError) console.error('places insert failed:', insertError)
-      }
-
-      results.push({ city, added: newPlaces.length })
+      results.push({ city, added: upserted.filter(r => !r.deduped).length })
     }
 
     return NextResponse.json({ added: results })
