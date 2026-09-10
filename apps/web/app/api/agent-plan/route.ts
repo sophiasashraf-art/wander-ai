@@ -1,27 +1,10 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { Client } from '@googlemaps/google-maps-services-js'
+import { AGENT_TOOLS, executeAgentTool, type AgentContext, type FinalizeResult } from '../../../lib/agentTools'
 
 const openai = new OpenAI()
-const maps = new Client()
 
-async function geocodePlace(name: string, destination: string): Promise<any> {
-  try {
-    const res = await maps.findPlaceFromText({
-      params: {
-        input: `${name} ${destination}`,
-        inputtype: 'textquery' as any,
-        fields: ['geometry', 'name', 'formatted_address', 'place_id'] as any,
-        key: process.env.GOOGLE_PLACES_API_KEY!,
-      }
-    })
-    const c = res.data.candidates?.[0]
-    if (c?.geometry?.location) {
-      return { lat: c.geometry.location.lat, lng: c.geometry.location.lng, address: c.formatted_address }
-    }
-  } catch {}
-  return null
-}
+const MAX_ITERS = 8
 
 export async function POST(req: Request) {
   try {
@@ -31,172 +14,164 @@ export async function POST(req: Request) {
     const numDays = parseInt(duration) || 3
 
     let timeConstraints = ''
-    if (arrivalTime) timeConstraints += `\nDay 1: Traveler arrives at ${arrivalTime}. Don't schedule before this.`
-    if (departureTime) timeConstraints += `\nDay ${numDays}: Traveler departs at ${departureTime}. Don't schedule at or after this.`
+    if (arrivalTime) timeConstraints += `\n- Day 1: traveler arrives at ${arrivalTime} — don't schedule before this.`
+    if (departureTime) timeConstraints += `\n- Day ${numDays}: traveler departs at ${departureTime} — don't schedule at or after this.`
 
-    let tripDescription = ''
-    if (cities?.length > 0) {
-      const cityBreakdown = cities.map((c: any) => `${c.name} (${c.days} days)`).join(', then ')
-      tripDescription = `a multi-city trip: ${cityBreakdown} — ${numDays} days total`
-    } else {
-      tripDescription = `a trip to ${destination} for ${numDays} days`
-    }
+    const cityList = cities?.length > 0 ? cities.map((c: any) => `${c.name} (${c.days} days)`).join(', then ') : ''
+    const tripDescription = cityList
+      ? `a multi-city trip: ${cityList} — ${numDays} days total`
+      : `a trip to ${destination} for ${numDays} days`
 
     const cityRules = cities?.length > 0
-      ? `\n- This is a MULTI-CITY trip. You MUST create days for EVERY city in order:\n${cities.map((c: any, i: number) => `  ${c.name}: ${c.days} day(s)`).join('\n')}\n- Total: ${numDays} days. Assign days sequentially (e.g. if Tokyo=2, Kyoto=3: Days 1-2 are Tokyo, Days 3-5 are Kyoto)\n- Title each day with the city name`
+      ? `\n- MULTI-CITY trip. Days for EVERY city, in order:\n${cities.map((c: any) => `  ${c.name}: ${c.days} day(s)`).join('\n')}\n- Assign sequentially (Tokyo=2, Kyoto=3 → Days 1-2 Tokyo, Days 3-5 Kyoto). Pass the right \`city\` to search_places. Title each day with its city.`
       : ''
 
     const hasExistingItinerary = currentItinerary?.days?.some((d: any) => d.stops?.length > 0)
     const hasSavedPlaces = !hasExistingItinerary && savedPlaces?.length > 0
 
-    const jsonFormatBlock = `{
-  "days": [
-    {
-      "day": 1,
-      "title": "Area or theme",
-      "stops": [
-        {
-          "time": "9:00 AM",
-          "name": "Exact real place name",
-          "category": "cafe|restaurant|activity|museum|landmark|park|shopping|bar|nightlife|other",
-          "note": "One sentence tip",
-          "suggested": true
-        }
-      ]
+    // Names the user already has (saved places or existing itinerary stops) + any
+    // coords they carry. finalize uses this to set the `suggested` flag
+    // deterministically and reuse coordinates instead of re-geocoding.
+    const knownPlaces = new Map<string, { lat?: number; lng?: number }>()
+    for (const p of (savedPlaces || [])) knownPlaces.set(String(p.name || '').trim().toLowerCase(), { lat: p.lat, lng: p.lng })
+    for (const d of (currentItinerary?.days || [])) {
+      for (const s of (d.stops || [])) knownPlaces.set(String(s.name || '').trim().toLowerCase(), { lat: s.lat, lng: s.lng })
     }
-  ]
-}`
 
-    const systemPrompt = hasExistingItinerary
-      ? `You are a friendly, knowledgeable travel planner helping someone adjust their EXISTING itinerary for ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
-${timeConstraints}
+    const ctx: AgentContext = {
+      destination: cityList ? cities.map((c: any) => c.name).join(', ') : destination,
+      knownPlaces,
+    }
 
-Here is their CURRENT itinerary — this is real, already-planned content, not a suggestion:
+    // ── Edit path: a precise structural change to an existing itinerary needs no
+    // discovery, so one well-instructed call is more reliable than a tool loop. ──
+    if (hasExistingItinerary) {
+      const editPrompt = `You are a friendly travel planner adjusting an EXISTING itinerary for ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).${timeConstraints}
+
+Current itinerary (real, already-planned):
 ${JSON.stringify(currentItinerary.days.map((d: any) => ({ day: d.day, title: d.title, stops: d.stops.map((s: any) => ({ name: s.name, time: s.time, category: s.category, note: s.note })) })), null, 2)}
 
-Your job:
-1. Understand what change the user is asking for (e.g. "make Shibuya its own day," "swap day 2 and day 3," "add a bar to day 1 evening," "what's a better order for these stops")
-2. Apply ONLY that change. Do not invent an unrelated new itinerary.
-3. Reply with the FULL updated itinerary (every day, every stop — modified and unmodified) as a JSON block wrapped in \`\`\`json ... \`\`\` using this exact format:
-${jsonFormatBlock}
+Apply ONLY the change the user asks for ("swap day 2 and 3", "add a bar to day 1 evening", "make Shibuya its own day", "reorder day 1"). Do not invent an unrelated itinerary.
+
+Reply with the FULL updated itinerary — every day, every stop, modified and unmodified — as a \`\`\`json block:
+{"days":[{"day":1,"title":"Area","stops":[{"time":"9:00 AM","name":"Exact real name","category":"cafe|restaurant|bar|activity|museum|landmark|park|shopping|nightlife|other","note":"one sentence","suggested":false}]}]}
 
 Rules:
-- Keep every existing stop's name, time, category, and note EXACTLY as given unless the user's request means it should change (moved, retimed, removed, or a new one added)
-- If adding a new stop, only suggest real, well-known places that actually exist, using their exact real name, and mark it "suggested": true. Existing stops keep "suggested": false unless already true.
-- Assign times for any new/moved stops based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
-- ${numDays} days total${cityRules}
-- If the user is just asking a question (not requesting a change), answer conversationally and omit the JSON block entirely — don't return the itinerary unchanged just to have something to return.
+- Keep every existing stop's name/time/category/note EXACTLY unless the request means it changes (moved, retimed, removed) or adds one.
+- Every stop appears on exactly ONE day. To swap two days, exchange their whole stops arrays and titles — do not merge.
+- New stops: real, well-known places, exact names, "suggested": true.
+- ${numDays} days total.${cityRules}
+- If the user is only asking a question (not requesting a change), answer conversationally and omit the JSON block entirely.
 
-Before the JSON (when you include one), write a brief note on what you changed.`
-      : hasSavedPlaces
-      ? `You are a friendly, knowledgeable travel planner helping someone build ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
-${timeConstraints}
+Before the JSON, write one sentence on what you changed.`
 
-They've already saved these real places — from things they pasted or searched — this is the raw material for the trip, not a suggestion:
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'system', content: editPrompt }, ...(messages || [])],
+      })
+      const reply = res.choices[0].message.content || ''
+      const jsonMatch = reply.match(/```json\s*([\s\S]*?)```/)
+      const prose = reply.replace(/```json\s*[\s\S]*?```/g, '').trim()
+
+      if (!jsonMatch) {
+        return NextResponse.json({ reply: prose || reply, itinerary: null, places: [] })
+      }
+      let days: any[] = []
+      try {
+        const clean = jsonMatch[1].replace(/,\s*([}\]])/g, '$1').replace(/\/\/.*$/gm, '')
+        days = JSON.parse(clean).days || []
+      } catch (e) {
+        console.error('agent-plan edit: bad JSON', e)
+        return NextResponse.json({ reply: prose || 'I could not apply that change — try rephrasing?', itinerary: null, places: [] })
+      }
+      const finalized = await executeAgentTool('finalize_itinerary', { summary: prose, days }, ctx) as FinalizeResult
+      return NextResponse.json({
+        reply: prose || 'Updated your itinerary.',
+        itinerary: { days: finalized.days },
+        places: finalized.places,
+      })
+    }
+
+    // ── Build path: agentic tool-use loop (discovery + route-checking pays off) ──
+    const toolRules = `
+You have tools — USE them, don't rely on memory:
+- search_places: find real venues by keyword. Every place in the itinerary must come from a search_places result (exact name + lat/lng), unless it's an unmistakable landmark you're certain of.
+- check_day_route: run on each day's stops (in visiting order, with coords + times) before finalizing. Fix backtracking / long-hop warnings by reordering or moving a stop to another day.
+- finalize_itinerary: call once the plan is solid and every day passed check_day_route.
+
+Do NOT put a JSON itinerary in your text — it only travels through finalize_itinerary.
+If the user is just chatting or asking a question, answer normally and call no tools.
+
+Rules:
+- Real, well-known places only, exact names.
+- Times by category: cafe/breakfast 8-10am, brunch 10am-12pm, park/market 10am-12pm, lunch 12-2pm, museum/landmark 2-5pm, dinner 7-9pm, bar 9pm+.
+- Group nearby places on the same day.
+- Each day spans the day: a morning stop (before noon), midday, afternoon, evening. Don't leave a day starting after 12pm.
+- Every stop appears on exactly ONE day.
+- ${numDays} days, ~${stopsPerDay} stops/day.${timeConstraints}${cityRules}`
+
+    const systemPrompt = hasSavedPlaces
+      ? `You are a friendly, knowledgeable travel planner building ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
+
+The user already saved these real places — the raw material; use all of them unless one clearly doesn't fit (say so if you drop one):
 ${JSON.stringify(savedPlaces.map((p: any) => ({ name: p.name, category: p.category, note: p.description || p.note, city: p.city })), null, 2)}
 
-Your job:
-1. Chat naturally if they want to talk through preferences first — otherwise build the itinerary right away
-2. Organize these saved places into a realistic day-by-day plan (group by proximity/neighborhood, sensible times)
-3. If there are real gaps (e.g. no dinner options among their saved places, or too few stops for the trip length), fill them in with a few well-known real suggestions — mark ONLY those "suggested": true
+Organize them into a realistic day-by-day plan grouped by proximity. Fill real gaps (no dinner among their saves, too few stops) with search_places results. The finalize step decides the "suggested" flag — just include every stop.
+${toolRules}`
+      : `You are a friendly, knowledgeable travel planner helping plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
 
-When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`json ... \`\`\` with this exact format:
-${jsonFormatBlock}
+Chat naturally — ask a clarifying question if it helps (food, interests, pace, neighborhoods). When you have enough or the user says go ahead, build the full itinerary.
+${toolRules}`
 
-Rules:
-- Use every saved place unless it clearly doesn't fit (e.g. wrong city) — don't drop one silently, mention it if you leave one out
-- Every saved place keeps "suggested": false and its exact name, category, and note
-- Assign times based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
-- ${numDays} days total, roughly ${stopsPerDay} stops per day${cityRules}
+    const convo: any[] = [{ role: 'system', content: systemPrompt }, ...(messages || [])]
+    let finalized: FinalizeResult | null = null
+    let lastText = ''
+    let toolCallCount = 0
 
-Before the JSON, write a brief friendly summary of the plan. After the JSON, ask if they want to change anything.`
-      : `You are a friendly, knowledgeable travel planner helping someone plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
-${timeConstraints}
+    for (let iter = 0; iter < MAX_ITERS && !finalized; iter++) {
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: convo,
+        tools: AGENT_TOOLS,
+        tool_choice: 'auto',
+      })
+      const msg = res.choices[0].message
+      convo.push({ role: 'assistant', content: msg.content ?? '', tool_calls: msg.tool_calls })
+      if (msg.content) lastText = msg.content
 
-Your job:
-1. Chat naturally — ask clarifying questions if needed (food preferences, interests, budget, neighborhoods, etc.)
-2. When you have enough info OR the user says to go ahead, generate the full itinerary
+      if (!msg.tool_calls?.length) {
+        return NextResponse.json({ reply: msg.content || '', itinerary: null, places: [] })
+      }
 
-When generating the itinerary, you MUST include a JSON block wrapped in \`\`\`json ... \`\`\` with this exact format:
-${jsonFormatBlock}
-
-Rules for the itinerary:
-- ONLY suggest real, well-known places that actually exist
-- Use the exact real name of each place (as it appears on Google Maps)
-- Assign times based on category: cafes 8-10am, parks/markets 10am-12pm, lunch 12-2pm, museums/landmarks 2-5pm, dinner 7-9pm, bars 9pm+
-- Group nearby places on the same day
-- ${numDays} days total, ${stopsPerDay} stops per day
-- Every stop must have "suggested": true${cityRules}
-
-Before the JSON, write a brief friendly summary of the plan. After the JSON, ask if they want to change anything.`
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages,
-      ],
-    })
-
-    const reply = response.choices[0].message.content || ''
-
-    // Try to extract itinerary JSON from the response
-    const jsonMatch = reply.match(/```json\s*([\s\S]*?)```/)
-    let itinerary = null
-    let places: any[] = []
-
-    if (jsonMatch) {
-      try {
-        // Clean up common GPT JSON issues: trailing commas, comments
-        const cleanJson = jsonMatch[1]
-          .replace(/,\s*([}\]])/g, '$1')  // trailing commas
-          .replace(/\/\/.*$/gm, '')        // line comments
-          .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
-        const parsed = JSON.parse(cleanJson)
-        if (parsed.days?.length > 0) {
-          // Geocode all places in parallel
-          const allStops = parsed.days.flatMap((d: any) =>
-            d.stops.map((s: any) => ({ name: s.name, category: s.category }))
-          )
-          const geocoded = await Promise.all(
-            allStops.map(async (s: any) => {
-              const geo = await geocodePlace(s.name, destination)
-              return { ...s, ...geo }
-            })
-          )
-
-          const coordMap: Record<string, any> = {}
-          geocoded.forEach((p: any) => {
-            if (p.lat && p.lng) coordMap[p.name] = p
-          })
-
-          // Attach coords to stops
-          itinerary = {
-            days: parsed.days.map((day: any) => ({
-              ...day,
-              stops: day.stops.map((stop: any) => ({
-                ...stop,
-                lat: coordMap[stop.name]?.lat,
-                lng: coordMap[stop.name]?.lng,
-                address: coordMap[stop.name]?.address,
-              }))
-            }))
-          }
-
-          places = geocoded.filter((p: any) => p.lat && p.lng)
+      for (const call of msg.tool_calls) {
+        if (call.type !== 'function') continue
+        toolCallCount++
+        let parsed: any = {}
+        try { parsed = JSON.parse(call.function.arguments || '{}') } catch {}
+        const result = await executeAgentTool(call.function.name, parsed, ctx)
+        if (call.function.name === 'finalize_itinerary' && (result as any)?.finalized) {
+          finalized = result as FinalizeResult
+          convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: true }) })
+        } else {
+          convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result).slice(0, 6000) })
         }
-      } catch (e) {
-        console.error('Failed to parse itinerary JSON from agent:', e)
       }
     }
 
-    // Clean the reply — remove the JSON block for display
-    const cleanReply = reply.replace(/```json\s*[\s\S]*?```/g, '').trim()
+    console.log(`agent-plan: ${toolCallCount} tool calls, finalized=${!!finalized}`)
+
+    if (!finalized) {
+      return NextResponse.json({
+        reply: lastText || "Tell me a bit more about what you're after and I'll put it together.",
+        itinerary: null,
+        places: [],
+      })
+    }
 
     return NextResponse.json({
-      reply: cleanReply,
-      itinerary,
-      places,
+      reply: finalized.summary,
+      itinerary: { days: finalized.days },
+      places: finalized.places,
     })
   } catch (e: any) {
     console.error('Agent error:', e)

@@ -85,7 +85,7 @@ const cityRegionCache = new Map<string, CityRegion | null>()
 // how a San Francisco itinerary ended up with a cafe pinned in LA. The viewport
 // self-scales: a city's is tens of km, a country's is continental, so the guard
 // below is strict for cities and effectively a no-op for whole-country trips.
-async function resolveCityRegion(destination: string): Promise<CityRegion | null> {
+export async function resolveCityRegion(destination: string): Promise<CityRegion | null> {
   const key = destination.trim().toLowerCase()
   if (!key) return null
   if (cityRegionCache.has(key)) return cityRegionCache.get(key)!
