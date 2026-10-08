@@ -783,7 +783,7 @@ export default function Home() {
           departureTime: departureTime || undefined,
           currentItinerary: editableDays.some(d => d.stops.length > 0) ? { days: editableDays } : undefined,
           savedPlaces: places.length > 0
-            ? places.map(p => ({ name: p.name, category: p.category, description: p.description, city: p.city }))
+            ? places.map(p => ({ name: p.name, category: p.category, description: p.description, city: p.city, opening_hours: p.opening_hours }))
             : undefined,
         }),
       })

@@ -1,6 +1,6 @@
 import { Client } from '@googlemaps/google-maps-services-js'
 import { resolveCityRegion, geocodePlace } from './placeIngestion'
-import { routeStopsForDay, haversineKm, parseMin, fmtMin, clampToWindow } from './itineraryRouting'
+import { routeStopsForDay, haversineKm, parseMin, fmtMin, fmtHour, defaultHour, clampToWindow } from './itineraryRouting'
 
 const maps = new Client()
 
@@ -28,7 +28,7 @@ export const AGENT_TOOLS = [
     function: {
       name: 'check_day_route',
       description:
-        "Sanity-check one day's travel. Pass the day's stops in visiting order with coordinates and times. Returns total distance, per-leg distances, and warnings about backtracking or missing coordinates. Call this for each day before finalizing to catch a day that zigzags across the city.",
+        "Sanity-check one day's travel AND pacing. Pass the day's stops in visiting order with coordinates and times. Returns total distance, per-leg distances, and warnings about backtracking, missing coordinates, or a multi-hour idle gap between two stops (fix by adding a stop in the gap or moving a time). Call this for each day before finalizing to catch a day that zigzags across the city or has dead time.",
       parameters: {
         type: 'object',
         properties: {
@@ -126,9 +126,14 @@ export const AGENT_TOOLS = [
 export interface AgentContext {
   destination: string
   // Names the user already saved / already had on the itinerary. Used to set the
-  // `suggested` flag deterministically instead of trusting the model, and to
-  // reuse their coordinates. Lowercased, trimmed.
-  knownPlaces?: Map<string, { lat?: number; lng?: number }>
+  // `suggested` flag and category deterministically instead of trusting the
+  // model (which can relabel a saved bar as "activity" and lose its evening
+  // time window), to reuse their coordinates, and to guarantee every saved
+  // place survives even if the model drops one restating a large itinerary.
+  // Keyed lowercased+trimmed; `name` keeps the original display casing.
+  // `mustKeep` (saved places only, never currentItinerary edits) means: if the
+  // model's final days don't include it, re-add it rather than lose it.
+  knownPlaces?: Map<string, { name?: string; lat?: number; lng?: number; category?: string; mustKeep?: boolean }>
 }
 
 export interface FinalizeResult {
@@ -198,11 +203,19 @@ async function searchPlaces(args: { query: string; city?: string }, ctx: AgentCo
     params.radius = 20000
   }
   const res = await maps.textSearch({ params })
-  const places = (res.data.results || []).slice(0, 6).map((p) => ({
+  // Rank by rating weighted toward places with enough reviews to trust it — a
+  // 5.0 from 3 reviews shouldn't outrank a 4.6 from 2,000. Unrated results sort
+  // last but aren't dropped, so a sparse category still returns something.
+  const ranked = [...(res.data.results || [])].sort((a: any, b: any) => {
+    const score = (p: any) => (p.rating ? p.rating * Math.log10((p.user_ratings_total || 0) + 10) : -1)
+    return score(b) - score(a)
+  })
+  const places = ranked.slice(0, 8).map((p) => ({
     name: p.name,
     lat: p.geometry?.location.lat,
     lng: p.geometry?.location.lng,
     rating: p.rating ?? null,
+    rating_count: p.user_ratings_total ?? null,
     price_level: p.price_level ?? null,
     address: p.formatted_address ?? null,
     category: guessCategory(p.types || []),
@@ -210,12 +223,23 @@ async function searchPlaces(args: { query: string; city?: string }, ctx: AgentCo
   return { places }
 }
 
-function checkDayRoute(args: { stops: Array<{ name: string; lat?: number; lng?: number; time?: string }> }) {
+function checkDayRoute(args: { stops: Array<{ name: string; lat?: number; lng?: number; time?: string; category?: string }> }) {
   const stops = [...(args.stops || [])].sort((a, b) => parseMin(a.time || '') - parseMin(b.time || ''))
   const warnings: string[] = []
 
   const missing = stops.filter((s) => typeof s.lat !== 'number' || typeof s.lng !== 'number').map((s) => s.name)
   if (missing.length) warnings.push(`Missing coordinates for: ${missing.join(', ')}. Use search_places to get the exact venue, then include lat/lng.`)
+
+  // Idle-time gaps: two fixed meal/bar times hours apart with nothing between
+  // them reads as dead time, not a plan — this doesn't show up in the distance
+  // check at all since both stops can be right next to each other.
+  for (let i = 1; i < stops.length; i++) {
+    const gap = parseMin(stops[i].time || '') - parseMin(stops[i - 1].time || '')
+    if (gap >= 240) {
+      const h = Math.round(gap / 6) / 10
+      warnings.push(`Idle gap: ${stops[i - 1].name} (${stops[i - 1].time}) to ${stops[i].name} (${stops[i].time}) is ${h}h with nothing in between — add a stop in that window or move one earlier/later.`)
+    }
+  }
 
   const geo = stops.filter((s) => typeof s.lat === 'number' && typeof s.lng === 'number') as Array<{ name: string; lat: number; lng: number }>
   const legs: Array<{ from: string; to: string; km: number }> = []
@@ -237,6 +261,59 @@ function checkDayRoute(args: { stops: Array<{ name: string; lat?: number; lng?: 
   }
   // Cap so the model isn't drowned into a re-check loop.
   return { total_km: Math.round(total * 10) / 10, legs, warnings: warnings.slice(0, 3) }
+}
+
+// Nudge any stop that lands within 20min of the previous one 75min later.
+function spreadCollidingTimes(stops: any[]): any[] {
+  const result = [...stops]
+  for (let i = 1; i < result.length; i++) {
+    const prev = parseMin(result[i - 1].time)
+    if (parseMin(result[i].time) <= prev + 20) result[i] = { ...result[i], time: fmtMin(prev + 75) }
+  }
+  return result
+}
+
+// Repeatedly find the single largest idle gap and fill it, rather than one
+// left-to-right pass — a pass that inserts once per original pair can leave a
+// real gap unfixed when a single huge gap needs two fillers (splitting an
+// 11-hour gap once still leaves ~5.5 hours on each side).
+async function fillIdleGaps(stops: any[], ctx: AgentContext): Promise<any[]> {
+  let result = [...stops]
+  const existingNames = new Set(result.map((s: any) => (s.name || '').trim().toLowerCase()))
+  const MAX_FILLS = 4 // safety cap on API calls / stops added per day
+
+  for (let fill = 0; fill < MAX_FILLS; fill++) {
+    let worstIdx = -1, worstGap = 0
+    for (let i = 1; i < result.length; i++) {
+      const gap = parseMin(result[i].time || '') - parseMin(result[i - 1].time || '')
+      if (gap > worstGap) { worstGap = gap; worstIdx = i }
+    }
+    if (worstIdx === -1 || worstGap < 240) break
+
+    const prevMin = parseMin(result[worstIdx - 1].time || '')
+    try {
+      const query = worstGap >= 300 ? 'popular things to do' : 'things to do nearby'
+      const found = await searchPlaces({ query, city: ctx.destination }, ctx)
+      const pick = (found.places || []).find((p: any) => p.name && !existingNames.has(p.name.trim().toLowerCase()))
+      if (!pick?.name) break // no more unique candidates — stop trying rather than loop forever
+      existingNames.add(pick.name.trim().toLowerCase())
+      const midMin = prevMin + Math.round(worstGap / 2)
+      result.splice(worstIdx, 0, {
+        name: pick.name,
+        category: pick.category || 'activity',
+        time: fmtMin(midMin),
+        note: pick.rating ? `Well-rated local spot (${pick.rating}★) to fill the gap between your other stops.` : 'Added to fill the gap between your other stops.',
+        suggested: true,
+        lat: pick.lat,
+        lng: pick.lng,
+        address: pick.address ?? null,
+      })
+    } catch (e: any) {
+      console.error('fillIdleGaps search failed:', e?.message)
+      break
+    }
+  }
+  return result
 }
 
 async function finalizeItinerary(
@@ -277,9 +354,14 @@ async function finalizeItinerary(
     }),
   )
 
-  const finalDays = days.map((d: any) => {
+  const finalDays = await Promise.all(days.map(async (d: any) => {
     let stops = (d.stops || []).map((s: any) => {
-      const category = s.category || 'activity'
+      // Ground truth over the model's memory: a saved bar restated as a plain
+      // "activity" loses its evening time window and can land anywhere,
+      // including the morning. If we already know this place's real category
+      // (it's one of the user's saves), that wins over whatever the model wrote.
+      const knownCategory = known.get(norm(s.name))?.category
+      const category = knownCategory || s.category || 'activity'
       return {
         ...s,
         category,
@@ -298,13 +380,38 @@ async function finalizeItinerary(
     // clamp once more and re-sort.
     stops = stops.map((s: any) => ({ ...s, time: clampToWindow(s.time || '', s.category) }))
     stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
-    // Spread stops that collided on the same/near time.
-    for (let i = 1; i < stops.length; i++) {
-      const prev = parseMin(stops[i - 1].time)
-      if (parseMin(stops[i].time) <= prev + 20) stops[i] = { ...stops[i], time: fmtMin(prev + 75) }
-    }
+    stops = spreadCollidingTimes(stops)
+    // Belt-and-suspenders: the model is told to fix multi-hour idle gaps via
+    // check_day_route but doesn't always do it (or rewrites the day afterward
+    // without re-checking). Guarantee it here instead of just hoping — search
+    // for one real thing to do and drop it in the gap rather than shipping
+    // dead time.
+    stops = await fillIdleGaps(stops, ctx)
+    // fillIdleGaps can itself insert a stop at a time that collides with an
+    // existing one — spread once more.
+    stops = spreadCollidingTimes(stops)
     return { day: d.day, title: d.title || `Day ${d.day}`, stops }
-  })
+  }))
+
+  // Guarantee every saved place survives — the model can silently drop one
+  // when restating a large itinerary, which is a worse outcome than placing
+  // it at an imperfect time. Append any missing one to the lightest day.
+  const placedNames = new Set(finalDays.flatMap((d: any) => d.stops.map((s: any) => norm(s.name))))
+  for (const [key, info] of known) {
+    if (!info.mustKeep || placedNames.has(key)) continue
+    const target = finalDays.reduce((a: any, b: any) => (a.stops.length <= b.stops.length ? a : b))
+    const category = info.category || 'activity'
+    target.stops.push({
+      name: info.name || key,
+      category,
+      time: fmtHour(defaultHour(category)),
+      note: '',
+      suggested: false,
+      lat: info.lat,
+      lng: info.lng,
+    })
+    target.stops.sort((a: any, b: any) => parseMin(a.time) - parseMin(b.time))
+  }
 
   const places = finalDays
     .flatMap((d: any) => d.stops)

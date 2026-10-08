@@ -104,8 +104,35 @@ export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; l
 export const DAY_START_FLOOR = 7 * 60 + 30  // 7:30 AM — don't route a flexible stop earlier than this
 export const DAY_END_CAP = 22 * 60 + 30     // 10:30 PM — don't route one later than this
 
+// Substring match, same style as CATEGORY_WINDOW/defaultHour — a model (or a
+// user's own saved category) rarely writes the bare word "bar"; "cocktail bar",
+// "rooftop bar", "nightclub" all need to still count as meal/nightlife anchors,
+// or they fall through to the "flexible" path and can get interpolated to any
+// time in a gap, including the morning.
+const ANCHOR_CATEGORY_KEYWORDS = ['cafe', 'coffee', 'bakery', 'breakfast', 'brunch', 'restaurant', 'dinner', 'lunch', 'bar', 'pub', 'nightlife', 'club', 'lounge']
+export function isAnchorCategory(category: string): boolean {
+  const c = (category || '').toLowerCase()
+  return ANCHOR_CATEGORY_KEYWORDS.some(k => c.includes(k))
+}
+
+// How long someone actually spends at a stop, in minutes — used to pace
+// flexible (non-meal) stops by real duration instead of dividing a gap evenly.
+const TYPICAL_DURATION_MIN: Record<string, number> = {
+  museum: 100, gallery: 75, tour: 120, beach: 90, shopping: 70, market: 50,
+  park: 60, garden: 50, hike: 90, trail: 90, nature: 60,
+  landmark: 40, monument: 30, viewpoint: 25, sunset: 30, temple: 30, church: 25,
+}
+const DEFAULT_DURATION_MIN = 45
+const TRAVEL_BUFFER_MIN = 20 // walking/short-ride buffer folded into each slot
+
+function typicalDurationMin(category: string): number {
+  const c = (category || '').toLowerCase()
+  for (const [k, v] of Object.entries(TYPICAL_DURATION_MIN)) if (c.includes(k)) return v
+  return DEFAULT_DURATION_MIN
+}
+
 export function routeStopsForDay(stops: any[]): any[] {
-  const isAnchor = (s: any) => ['cafe', 'coffee', 'bakery', 'breakfast', 'brunch', 'restaurant', 'bar', 'pub', 'nightlife', 'club'].includes((s.category || '').toLowerCase())
+  const isAnchor = (s: any) => isAnchorCategory(s.category)
   const hasCoords = (s: any) => typeof s.lat === 'number' && typeof s.lng === 'number'
 
   const anchors = stops.filter(isAnchor).sort((a, b) => parseMin(a.time) - parseMin(b.time))
@@ -158,7 +185,10 @@ export function routeStopsForDay(stops: any[]): any[] {
   }
 
   // Assign times: walk the route, and for each run of consecutive flexible
-  // stops between two anchors (or a boundary), space them evenly across the gap.
+  // stops between two anchors (or a boundary), space them by how long each one
+  // actually takes (a museum needs ~100min, a viewpoint ~25) rather than
+  // dividing the gap evenly — even spacing is what made a quick photo stop and
+  // a proper museum visit look identical, which read as mechanical pacing.
   let i = 0
   while (i < route.length) {
     if (isAnchor(route[i])) { i++; continue }
@@ -167,18 +197,33 @@ export function routeStopsForDay(stops: any[]): any[] {
     const prevTime = i > 0 ? parseMin(route[i - 1].time) : null
     const nextTime = j < route.length ? parseMin(route[j].time) : null
     const runLen = j - i
+    const durations = route.slice(i, j).map((s: any) => typicalDurationMin(s.category))
+
+    // Natural (unscaled) offsets from the run's start, each stop's slot sized
+    // to its typical visit duration plus a travel buffer.
+    const natural: number[] = []
+    let cursor = TRAVEL_BUFFER_MIN
+    for (let k = 0; k < runLen; k++) {
+      natural.push(cursor)
+      cursor += durations[k] + TRAVEL_BUFFER_MIN
+    }
+    const naturalSpan = cursor
+
     for (let k = 0; k < runLen; k++) {
       let assigned: number
       if (prevTime !== null && nextTime !== null && nextTime > prevTime) {
-        assigned = prevTime + (nextTime - prevTime) * (k + 1) / (runLen + 1)
+        const scale = naturalSpan > (nextTime - prevTime) ? (nextTime - prevTime) / naturalSpan : 1
+        assigned = prevTime + natural[k] * scale
       } else if (prevTime !== null) {
+        // Trailing run (after the last anchor) — compress toward DAY_END_CAP if needed.
         const span = Math.max(DAY_END_CAP - prevTime, 30 * runLen)
-        const step = Math.min(90, span / (runLen + 1))
-        assigned = Math.min(prevTime + step * (k + 1), DAY_END_CAP)
+        const scale = naturalSpan > span ? span / naturalSpan : 1
+        assigned = Math.min(prevTime + natural[k] * scale, DAY_END_CAP)
       } else if (nextTime !== null) {
+        // Leading run (before the first anchor) — lay out backward from nextTime.
         const span = Math.max(nextTime - DAY_START_FLOOR, 30 * runLen)
-        const step = Math.min(90, span / (runLen + 1))
-        assigned = Math.max(nextTime - step * (runLen - k), DAY_START_FLOOR)
+        const scale = naturalSpan > span ? span / naturalSpan : 1
+        assigned = Math.max(nextTime - (naturalSpan - natural[k]) * scale, DAY_START_FLOOR)
       } else {
         assigned = parseMin(route[i + k].time) || defaultHour(route[i + k].category) * 60
       }

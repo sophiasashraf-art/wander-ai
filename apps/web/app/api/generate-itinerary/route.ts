@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
 import { geocodePlace } from '../../../lib/placeIngestion'
 import {
-  defaultHour, clampToWindow, fmtHour, parseMin, fmtMin, routeStopsForDay,
+  defaultHour, clampToWindow, fmtHour, parseMin, fmtMin, routeStopsForDay, isAnchorCategory,
 } from '../../../lib/itineraryRouting'
 
 const openai = new OpenAI()
@@ -331,7 +331,7 @@ Return JSON: {"days": [{"day": 1, "stops": [{"time": "7:00 PM", "name": "...", "
       // that technically passed the wide window check but isn't actually a dinner slot.
       const hasEveningStop = stops.some((s: any) => parseMin(s.time) >= 17 * 60)
       if (!hasEveningStop) {
-        const anchorIdx = stops.findIndex((s: any) => ['restaurant', 'bar'].includes((s.category || '').toLowerCase()))
+        const anchorIdx = stops.findIndex((s: any) => isAnchorCategory(s.category))
         if (anchorIdx !== -1) {
           const cat = stops[anchorIdx].category.toLowerCase()
           stops[anchorIdx] = { ...stops[anchorIdx], time: fmtHour(defaultHour(cat)) }

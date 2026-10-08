@@ -32,12 +32,16 @@ export async function POST(req: Request) {
   const hasSavedPlaces = !hasExistingItinerary && savedPlaces?.length > 0
 
   // Names the user already has (saved places or existing itinerary stops) + any
-  // coords they carry. finalize uses this to set the `suggested` flag
-  // deterministically and reuse coordinates instead of re-geocoding.
-  const knownPlaces = new Map<string, { lat?: number; lng?: number }>()
-  for (const p of (savedPlaces || [])) knownPlaces.set(String(p.name || '').trim().toLowerCase(), { lat: p.lat, lng: p.lng })
+  // coords/category they carry. finalize uses this to set the `suggested` flag
+  // and category deterministically instead of trusting the model, to reuse
+  // coordinates instead of re-geocoding, and — for mustKeep entries only — to
+  // re-add a saved place the model silently dropped. mustKeep is true only for
+  // savedPlaces, never currentItinerary: a dropped itinerary stop may be an
+  // intentional edit ("remove the museum from day 2") and shouldn't be undone.
+  const knownPlaces = new Map<string, { name?: string; lat?: number; lng?: number; category?: string; mustKeep?: boolean }>()
+  for (const p of (savedPlaces || [])) knownPlaces.set(String(p.name || '').trim().toLowerCase(), { name: p.name, lat: p.lat, lng: p.lng, category: p.category, mustKeep: true })
   for (const d of (currentItinerary?.days || [])) {
-    for (const s of (d.stops || [])) knownPlaces.set(String(s.name || '').trim().toLowerCase(), { lat: s.lat, lng: s.lng })
+    for (const s of (d.stops || [])) knownPlaces.set(String(s.name || '').trim().toLowerCase(), { name: s.name, lat: s.lat, lng: s.lng, category: s.category })
   }
 
   const ctx: AgentContext = {
@@ -66,8 +70,11 @@ Before the JSON, write one sentence on what you changed.`
 
   const toolRules = `
 You have tools — USE them, don't rely on memory:
-- search_places: find real venues by keyword. Every place in the itinerary must come from a search_places result (exact name + lat/lng), unless it's an unmistakable landmark you're certain of.
-- check_day_route: run once per day before finalizing. If a warning can't be fixed by a quick reorder (e.g. a beach really is on the edge of town), leave it and mention the travel in that stop's note — do NOT keep re-checking the same day. At most two rounds of route-checking total.
+- search_places: find real venues by keyword. Every place in the itinerary must come from a search_places result (exact name + lat/lng), unless it's an unmistakable landmark you're certain of. Results are ranked with rating_count already factored in — a 5.0 from 3 reviews is listed below a 4.6 from 2,000. Don't just take the first result: pick the one that's actually the best fit for the query and the vibe, the way a well-traveled local would — not whichever is listed first.
+- check_day_route: run once per day before finalizing. Treat its two warning types differently:
+  - "Long hop" / "Backtrack" (geography): fix with a quick reorder if easy; if a beach really is on the edge of town, leave it and mention the travel in that stop's note. Don't keep re-checking the same day over this.
+  - "Idle gap" (3+ hours with nothing scheduled): this one you MUST fix — it means the day has dead time, not that it's done. Fix it by search_places-ing something to fill the window (another food stop, a short activity) or by moving an existing time closer. Do not finalize a day with an idle-gap warning still open.
+  At most two rounds of route-checking total.
 - raise_checkpoint: ONLY for a genuine either/or the user must decide (e.g. every saved place is a restaurant and they haven't said what else they want). NOT for "these are a bit far apart" — just make a sensible call and finalize. At most once per plan.
 - finalize_itinerary: call this as soon as you have a workable plan. A good-enough itinerary now beats a perfect one you never submit. You MUST call it — never end without it.
 
@@ -75,9 +82,14 @@ Work efficiently: do several searches in ONE message (multiple tool calls at onc
 Do NOT put a JSON itinerary — or a plain-text list of places — in your reply. Places only travel through finalize_itinerary. If you have places, you are building: call the tools.
 A short phrase like "foodie trip" or "chill beaches and sunset spots" IS a request to build — treat it as the vibe and build the full itinerary. Only reply in plain text (no tools) if the user asks an actual question.
 
+Write like someone who actually knows the destination, not a brochure:
+- Every stop's "note" must be specific and useful — a dish/drink to order, what to actually do there, the best time to go, what it's known for. Never generic filler ("charming spot," "great atmosphere," "must-visit," "hidden gem").
+- Use the rating/rating_count/price_level from search results to actually choose, not just to display — prefer the place you'd genuinely recommend to a friend over the one that merely matched the keyword.
+
 Rules:
 - Real, well-known places only, exact names.
 - Times by category: cafe/breakfast 8-10am, brunch 10am-12pm, park/market 10am-12pm, lunch 12-2pm, museum/landmark 2-5pm, dinner 7-9pm, bar 9pm+.
+- Don't cram: a museum or gallery needs ~1.5-2h, a viewpoint ~20-30min. 3-5 stops/day is usually enough even at a lively pace — leave room to actually enjoy each one, not just check it off.
 - Group nearby places on the same day.
 - Each day spans the day: a morning stop (before noon), midday, afternoon, evening. Don't leave a day starting after 12pm.
 - Every stop appears on exactly ONE day.
@@ -87,9 +99,9 @@ Rules:
     ? `You are a friendly, knowledgeable travel planner building ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
 
 The user already saved these real places — the raw material; use all of them unless one clearly doesn't fit (say so if you drop one):
-${JSON.stringify((savedPlaces || []).map((p: any) => ({ name: p.name, category: p.category, note: p.description || p.note, city: p.city })), null, 2)}
+${JSON.stringify((savedPlaces || []).map((p: any) => ({ name: p.name, category: p.category, note: p.description || p.note, city: p.city, hours: p.opening_hours || undefined })), null, 2)}
 
-Organize them into a realistic day-by-day plan grouped by proximity. Fill real gaps (no dinner among their saves, too few stops) with search_places results. The finalize step decides the "suggested" flag — just include every stop.
+Organize them into a realistic day-by-day plan grouped by proximity. A time only counts as realistic if the place is actually open then — check each place's "hours" (when given) and schedule within them; if hours aren't given, use sensible category defaults. Fill real gaps (no dinner among their saves, too few stops) with search_places results. The finalize step decides the "suggested" flag — just include every stop.
 ${toolRules}`
     : `You are a friendly, knowledgeable travel planner helping plan ${tripDescription} (${stopsPerDay} stops/day, ${vibe} pace).
 
@@ -151,12 +163,17 @@ ${toolRules}`
           if (msg.content) lastText = msg.content
 
           if (!msg.tool_calls?.length) {
-            // A bare text turn early on usually means it listed places instead of
-            // building. Nudge it once toward the tools before giving up.
+            // A bare text turn usually means it listed places instead of building —
+            // whether that's its very first reply or it already searched and then
+            // wrote the plan out as prose instead of submitting it. Nudge toward
+            // finalize_itinerary before giving up either way.
             const looksLikeListing = /\d\.\s|[-*]\s|:\s*\n/.test(msg.content || '') || (msg.content || '').length > 200
-            if (nudges < 2 && toolCallCount === 0 && looksLikeListing) {
+            if (nudges < 2 && looksLikeListing) {
               nudges++
-              convo.push({ role: 'user', content: 'Build the itinerary now — call search_places, then check_day_route, then finalize_itinerary. Do not reply with a list of places in text.' })
+              const instruction = toolCallCount === 0
+                ? 'Build the itinerary now — call search_places, then check_day_route, then finalize_itinerary. Do not reply with a list of places in text.'
+                : 'You already have what you need. Call finalize_itinerary now with this plan — do not restate it as text.'
+              convo.push({ role: 'user', content: instruction })
               continue
             }
             emit({ type: 'done', reply: msg.content || '', itinerary: null, places: [] })
