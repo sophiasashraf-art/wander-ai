@@ -53,6 +53,33 @@ export const AGENT_TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'raise_checkpoint',
+      description:
+        "Ask the user one quick multiple-choice question when a real decision would change the plan — e.g. their saved places are lopsided (lots of food, no activities), or the scope/pace is ambiguous. Use at most ONCE per plan, and only when the answer genuinely changes what you build. The loop pauses until they pick.",
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'One short sentence, e.g. "You saved 6 restaurants but no activities — what should I do?"' },
+          options: {
+            type: 'array',
+            description: '2-3 tappable choices',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'short slug, e.g. "add_activities"' },
+                label: { type: 'string', description: 'button text, e.g. "Add a few activities"' },
+              },
+              required: ['id', 'label'],
+            },
+          },
+        },
+        required: ['question', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'finalize_itinerary',
       description:
         'Submit the finished itinerary. Call this once the plan is solid and you have checked each day\'s route. After this the itinerary is saved and shown to the user.',
@@ -119,12 +146,32 @@ export async function executeAgentTool(
   try {
     if (name === 'search_places') return await searchPlaces(args, ctx)
     if (name === 'check_day_route') return checkDayRoute(args)
+    if (name === 'raise_checkpoint') return args // handled by the route loop
     if (name === 'finalize_itinerary') return await finalizeItinerary(args, ctx)
     return { error: `unknown tool: ${name}` }
   } catch (e: any) {
     console.error('agent tool failed:', name, e?.message)
     return { error: e?.message || 'tool execution failed' }
   }
+}
+
+// Human-readable one-liner for the live trace shown to the user.
+export function toolTraceText(name: string, args: any): string {
+  if (name === 'search_places') return `Searching: ${args?.query || 'places'}${args?.city ? ` in ${args.city}` : ''}`
+  if (name === 'check_day_route') return `Checking a day's route (${(args?.stops || []).length} stops)`
+  if (name === 'raise_checkpoint') return 'Asking you a question'
+  if (name === 'finalize_itinerary') return 'Finalizing the itinerary'
+  return name
+}
+
+export function toolDoneText(name: string, result: any): string {
+  if (name === 'search_places') return `Found ${(result?.places || []).length} places`
+  if (name === 'check_day_route') {
+    const w = (result?.warnings || []).length
+    return w ? `${w} route issue${w > 1 ? 's' : ''} to fix` : 'Route looks good'
+  }
+  if (name === 'finalize_itinerary') return 'Itinerary ready'
+  return 'Done'
 }
 
 function guessCategory(types: string[]): string {
@@ -177,17 +224,19 @@ function checkDayRoute(args: { stops: Array<{ name: string; lat?: number; lng?: 
     const d = haversineKm(geo[i - 1], geo[i])
     total += d
     legs.push({ from: geo[i - 1].name, to: geo[i].name, km: Math.round(d * 10) / 10 })
-    if (d > 6) warnings.push(`Long hop: ${geo[i - 1].name} → ${geo[i].name} is ${d.toFixed(1)}km. Consider reordering or moving one to another day.`)
+    if (d > 10) warnings.push(`Long hop: ${geo[i - 1].name} → ${geo[i].name} is ${d.toFixed(1)}km — reorder if easy, otherwise note the travel and move on.`)
   }
   // Backtrack: a stop that lands right next to an earlier one it had already left behind.
   for (let i = 2; i < geo.length; i++) {
     for (let j = 0; j < i - 1; j++) {
-      if (haversineKm(geo[i], geo[j]) < 0.6 && haversineKm(geo[i - 1], geo[j]) > 2) {
-        warnings.push(`Backtrack: ${geo[i].name} is right by ${geo[j].name} (stop ${j + 1}) but is visited after a detour. Reorder so nearby stops are consecutive.`)
+      if (haversineKm(geo[i], geo[j]) < 0.6 && haversineKm(geo[i - 1], geo[j]) > 3) {
+        warnings.push(`Backtrack: ${geo[i].name} is next to ${geo[j].name} (stop ${j + 1}) but comes after a detour — swap their order.`)
+        break
       }
     }
   }
-  return { total_km: Math.round(total * 10) / 10, legs, warnings }
+  // Cap so the model isn't drowned into a re-check loop.
+  return { total_km: Math.round(total * 10) / 10, legs, warnings: warnings.slice(0, 3) }
 }
 
 async function finalizeItinerary(

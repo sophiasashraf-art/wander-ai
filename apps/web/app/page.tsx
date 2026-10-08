@@ -383,6 +383,10 @@ export default function Home() {
   const [agentMessages, setAgentMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
   const [agentInput, setAgentInput] = useState('')
   const [agentLoading, setAgentLoading] = useState(false)
+  const [agentTrace, setAgentTrace] = useState<{ text: string; done: boolean }[]>([])
+  const [agentCheckpoint, setAgentCheckpoint] = useState<
+    { question: string; options: { id: string; label: string }[]; conversation: any[]; tool_call_id: string } | null
+  >(null)
   const agentChatRef = useRef<HTMLDivElement>(null)
   const workspaceBoxRef = useRef<HTMLDivElement>(null)
   const mainRef = useRef<HTMLElement>(null)
@@ -734,24 +738,39 @@ export default function Home() {
     }
   }
 
-  async function handleAgentSend(userMsg?: string) {
-    const msg = userMsg || agentInput.trim()
+  const scrollAgentChat = () =>
+    setTimeout(() => agentChatRef.current?.scrollTo({ top: agentChatRef.current.scrollHeight, behavior: 'smooth' }), 50)
+
+  async function applyAgentItinerary(data: { itinerary?: { days: any[] }; places?: any[] }) {
+    if (!(data.itinerary?.days?.length ?? 0)) return
+    const id = await ensureTripCreated()
+    if (!id) return
+    const normalized: Day[] = data.itinerary!.days.map((day: any) => ({
+      ...day,
+      stops: day.stops.map((stop: any, i: number) => ({ ...stop, id: stop.id || `agent-${day.day}-${i}-${stop.name}` })),
+    }))
+    setItinerary({ days: normalized })
+    setEditableDays(normalized)
+    if (data.places?.length) setPlaces(data.places)
+    await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', id)
+    window.history.replaceState({}, '', `?trip=${id}`)
+  }
+
+  // Streams NDJSON events from /api/agent-plan: trace lines while it works, a
+  // checkpoint (pauses for a tappable choice), or a final itinerary.
+  async function streamAgent(bodyMessages: any[]) {
     const agentDestination = tripMode === 'multi'
       ? cities.filter(c => c.name.trim()).map(c => c.name.trim()).join(', ')
       : destination.trim()
-    if (!msg || !agentDestination) return
-    setAgentInput('')
-    const newMessages = [...agentMessages, { role: 'user' as const, content: msg }]
-    setAgentMessages(newMessages)
+    setAgentTrace([])
     setAgentLoading(true)
-    setTimeout(() => agentChatRef.current?.scrollTo({ top: agentChatRef.current.scrollHeight, behavior: 'smooth' }), 50)
-
+    scrollAgentChat()
     try {
       const res = await fetch('/api/agent-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: newMessages,
+          messages: bodyMessages,
           destination: agentDestination,
           duration: tripMode === 'multi'
             ? `${cities.filter(c => c.name.trim()).reduce((sum, c) => sum + c.days, 0)}`
@@ -768,33 +787,131 @@ export default function Home() {
             : undefined,
         }),
       })
-      const data = await res.json()
-      setAgentMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
+      if (!res.body) throw new Error('no stream')
 
-      if (data.itinerary?.days?.length > 0) {
-        const id = await ensureTripCreated()
-        if (id) {
-          const normalized: Day[] = data.itinerary.days.map((day: any) => ({
-            ...day,
-            stops: day.stops.map((stop: any, i: number) => ({
-              ...stop,
-              id: stop.id || `agent-${day.day}-${i}-${stop.name}`,
-            })),
-          }))
-          setItinerary({ days: normalized })
-          setEditableDays(normalized)
-          if (data.places?.length > 0) {
-            setPlaces(data.places)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let evt: any
+          try { evt = JSON.parse(line) } catch { continue }
+
+          if (evt.type === 'phase') {
+            setAgentTrace(prev => [...prev, { text: evt.text, done: true }])
+          } else if (evt.type === 'tool') {
+            setAgentTrace(prev => [...prev, { text: evt.text, done: false }])
+          } else if (evt.type === 'tool_done') {
+            setAgentTrace(prev => {
+              const next = [...prev]
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (!next[i].done) { next[i] = { text: evt.text || next[i].text, done: true }; break }
+              }
+              return next
+            })
+          } else if (evt.type === 'checkpoint') {
+            setAgentCheckpoint({
+              question: evt.question,
+              options: evt.options || [],
+              conversation: evt.conversation || [],
+              tool_call_id: evt.tool_call_id,
+            })
+            setAgentLoading(false)
+            scrollAgentChat()
+          } else if (evt.type === 'done') {
+            if (evt.reply) setAgentMessages(prev => [...prev, { role: 'assistant', content: evt.reply }])
+            await applyAgentItinerary(evt)
+          } else if (evt.type === 'error') {
+            setAgentMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again?' }])
           }
-          await supabase.from('trips').update({ itinerary: { days: normalized } }).eq('id', id)
-          window.history.replaceState({}, '', `?trip=${id}`)
         }
       }
-    } catch (e) {
+    } catch {
       setAgentMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again?' }])
     }
     setAgentLoading(false)
-    setTimeout(() => agentChatRef.current?.scrollTo({ top: agentChatRef.current.scrollHeight, behavior: 'smooth' }), 50)
+    setAgentTrace([])
+    scrollAgentChat()
+  }
+
+  async function handleAgentSend(userMsg?: string) {
+    const msg = userMsg || agentInput.trim()
+    const agentDestination = tripMode === 'multi'
+      ? cities.filter(c => c.name.trim()).map(c => c.name.trim()).join(', ')
+      : destination.trim()
+    if (!msg || !agentDestination || agentLoading) return
+    setAgentInput('')
+    setAgentCheckpoint(null)
+    const newMessages = [...agentMessages, { role: 'user' as const, content: msg }]
+    setAgentMessages(newMessages)
+    await streamAgent(newMessages)
+  }
+
+  async function handleCheckpointChoice(option: { id: string; label: string }) {
+    if (!agentCheckpoint) return
+    const cp = agentCheckpoint
+    setAgentCheckpoint(null)
+    setAgentMessages(prev => [...prev, { role: 'user', content: option.label }])
+    // The choice becomes the tool result for the raise_checkpoint call, so the
+    // server loop resumes exactly where it paused.
+    await streamAgent([
+      ...cp.conversation,
+      { role: 'tool', tool_call_id: cp.tool_call_id, content: option.label },
+    ])
+  }
+
+  // Live trace + pending checkpoint, shared by both agent chat panels.
+  function renderAgentActivity() {
+    return (
+      <>
+        {agentLoading && (
+          <div className="flex justify-start">
+            <div className="bg-[#EFEFEF] rounded-lg rounded-bl-md px-4 py-2.5 text-sm text-[#6B6B6B] max-w-[85%]">
+              {agentTrace.length === 0 ? (
+                <span className="inline-flex gap-1">
+                  <span className="animate-bounce" style={{ animationDelay: '0ms' }}>·</span>
+                  <span className="animate-bounce" style={{ animationDelay: '150ms' }}>·</span>
+                  <span className="animate-bounce" style={{ animationDelay: '300ms' }}>·</span>
+                </span>
+              ) : (
+                <div className="space-y-1">
+                  {agentTrace.map((t, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <span className={t.done ? 'text-[#7A9E7E]' : 'text-[#A3A3A3]'}>{t.done ? '✓' : '○'}</span>
+                      <span className={t.done ? 'text-[#6B6B6B]' : 'text-[#0A0A0A]'}>{t.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {agentCheckpoint && (
+          <div className="flex justify-start">
+            <div className="bg-[#EFEFEF] rounded-lg rounded-bl-md px-4 py-3 text-sm text-[#0A0A0A] max-w-[85%]">
+              <p className="mb-2.5">{agentCheckpoint.question}</p>
+              <div className="flex flex-col gap-1.5">
+                {agentCheckpoint.options.map(opt => (
+                  <button
+                    key={opt.id}
+                    onClick={() => handleCheckpointChoice(opt)}
+                    className="text-left text-xs px-3 py-2 bg-white border border-[#E5E5E5] rounded-lg hover:border-[#3D5AFE] hover:text-[#3D5AFE] transition-colors"
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    )
   }
 
   // Groups extracted places by their detected city, most common first
@@ -1894,7 +2011,7 @@ export default function Home() {
                     ).map(suggestion => (
                       <button
                         key={suggestion}
-                        onClick={() => handleAgentSend(suggestion)}
+                        onClick={() => handleAgentSend(`Build my full itinerary — ${suggestion}`)}
                         className="text-xs px-3 py-1.5 border border-[#E5E5E5] rounded-full text-[#6B6B6B] hover:border-[#3D5AFE] hover:text-[#3D5AFE] transition-colors"
                       >
                         {suggestion}
@@ -1914,17 +2031,7 @@ export default function Home() {
                   </div>
                 </div>
               ))}
-              {agentLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-[#EFEFEF] rounded-lg rounded-bl-md px-4 py-2.5 text-sm text-[#6B6B6B]">
-                    <span className="inline-flex gap-1">
-                      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>·</span>
-                      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>·</span>
-                      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>·</span>
-                    </span>
-                  </div>
-                </div>
-              )}
+              {renderAgentActivity()}
             </div>
             {/* Input */}
             <div className="border-t border-[#E5E5E5] px-4 py-3 flex gap-2">
@@ -2620,7 +2727,7 @@ export default function Home() {
                     {msg.content}
                   </div>
                 ))}
-                {agentLoading && <div className="text-xs text-[#A3A3A3] px-1 py-1">Thinking...</div>}
+                {renderAgentActivity()}
               </div>
               <div className="flex items-center gap-2 p-2.5 border-t border-[#EFEFEF] shrink-0">
                 <input
