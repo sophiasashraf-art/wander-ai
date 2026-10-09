@@ -16,7 +16,7 @@ import { useRouteLegs } from '../lib/useRouteLegs'
 import {
   Menu, MapPin, Route, Sparkles, CalendarDays, Bot, Search, Camera, Heart,
   Leaf, Scale, Zap, ArrowRight, Pencil, Eye, Star, Check, Undo2,
-  ChevronDown, SlidersHorizontal, Plus,
+  ChevronDown, ChevronLeft, ChevronRight, SlidersHorizontal, Plus,
   Lightbulb, Link as LinkIcon,
   Utensils, Coffee, Compass, BedDouble, Tag, MoreHorizontal, X, Martini,
   GripVertical, Footprints, Car,
@@ -2698,30 +2698,68 @@ export default function Home() {
                         <div className="relative w-full rounded-lg overflow-hidden" style={{ height: '75vh', minHeight: 480 }}>
                           <div className="absolute inset-0">{buildMapNode(0, dayMarkers)}</div>
                           {editableDays.length > 1 && (
-                            // Swipe between days on this strip, not on the map itself — the
-                            // map already owns pan/zoom gestures, layering a swipe-to-change-day
-                            // handler on the same surface would fight it. Native CSS scroll-snap
-                            // instead of custom touch tracking, same mechanic as a photo gallery.
-                            <div
-                              ref={mobileDayStripRef}
-                              className="absolute top-3 inset-x-3 z-10 flex overflow-x-auto snap-x snap-mandatory rounded-full bg-white/90 backdrop-blur-sm shadow-md"
-                              style={{ scrollbarWidth: 'none' }}
-                              onScroll={e => {
-                                const el = e.currentTarget
-                                const idx = Math.round(el.scrollLeft / el.clientWidth)
-                                setMobileDayIndex(idx)
-                              }}
-                            >
-                              {editableDays.map((day: Day, i: number) => (
+                            <div className="absolute top-3 inset-x-3 z-10">
+                              {/* Swipe between days on this strip, not on the map itself — the
+                                  map already owns pan/zoom gestures, layering a swipe-to-change-day
+                                  handler on the same surface would fight it. Native CSS scroll-snap
+                                  instead of custom touch tracking, same mechanic as a photo gallery.
+                                  Chevrons + dots alongside it since a swipe gesture alone is easy to
+                                  miss entirely — research on this exact class of UI found only 62%
+                                  of users discover an unhinted gesture; these make it obvious there's
+                                  more here and give a tap-based way in for anyone who doesn't swipe. */}
+                              <div className="flex items-center gap-1.5 bg-white/90 backdrop-blur-sm rounded-full shadow-md px-1">
                                 <button
-                                  key={i}
-                                  onClick={() => mobileDayStripRef.current?.scrollTo({ left: i * mobileDayStripRef.current.clientWidth, behavior: 'smooth' })}
-                                  className="snap-center shrink-0 w-full flex items-center justify-center gap-1.5 py-2"
+                                  onClick={() => mobileDayStripRef.current?.scrollTo({ left: Math.max(0, mobileDayIndex - 1) * mobileDayStripRef.current.clientWidth, behavior: 'smooth' })}
+                                  disabled={mobileDayIndex === 0}
+                                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-[#6B6B6B] disabled:opacity-25 disabled:cursor-default"
+                                  aria-label="Previous day"
                                 >
-                                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: DAY_COLORS[i % DAY_COLORS.length] }} />
-                                  <span className="text-xs font-medium text-[#0A0A0A] truncate">Day {day.day} — {day.title}</span>
+                                  <ChevronLeft size={14} strokeWidth={2.25} />
                                 </button>
-                              ))}
+                                <div
+                                  ref={mobileDayStripRef}
+                                  className="flex overflow-x-auto snap-x snap-mandatory flex-1 min-w-0"
+                                  style={{ scrollbarWidth: 'none' }}
+                                  onScroll={e => {
+                                    const el = e.currentTarget
+                                    const idx = Math.round(el.scrollLeft / el.clientWidth)
+                                    setMobileDayIndex(idx)
+                                  }}
+                                >
+                                  {editableDays.map((day: Day, i: number) => (
+                                    <button
+                                      key={i}
+                                      onClick={() => mobileDayStripRef.current?.scrollTo({ left: i * mobileDayStripRef.current.clientWidth, behavior: 'smooth' })}
+                                      className="snap-center shrink-0 w-full flex items-center justify-center gap-1.5 py-2"
+                                    >
+                                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: DAY_COLORS[i % DAY_COLORS.length] }} />
+                                      <span className="text-xs font-medium text-[#0A0A0A] truncate">Day {day.day} — {day.title}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                                <button
+                                  onClick={() => mobileDayStripRef.current?.scrollTo({ left: Math.min(editableDays.length - 1, mobileDayIndex + 1) * mobileDayStripRef.current.clientWidth, behavior: 'smooth' })}
+                                  disabled={mobileDayIndex >= editableDays.length - 1}
+                                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-[#6B6B6B] disabled:opacity-25 disabled:cursor-default"
+                                  aria-label="Next day"
+                                >
+                                  <ChevronRight size={14} strokeWidth={2.25} />
+                                </button>
+                              </div>
+                              <div className="flex items-center justify-center gap-1 mt-1.5">
+                                {editableDays.map((_: Day, i: number) => (
+                                  <div
+                                    key={i}
+                                    className="rounded-full transition-all"
+                                    style={{
+                                      width: i === mobileDayIndex ? 12 : 5,
+                                      height: 5,
+                                      background: i === mobileDayIndex ? DAY_COLORS[i % DAY_COLORS.length] : 'rgba(255,255,255,0.7)',
+                                      boxShadow: '0 0 0 1px rgba(0,0,0,0.08)',
+                                    }}
+                                  />
+                                ))}
+                              </div>
                             </div>
                           )}
                           {activeDayStops.length > 0 && (
