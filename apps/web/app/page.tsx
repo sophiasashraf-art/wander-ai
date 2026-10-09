@@ -18,7 +18,7 @@ import {
   ChevronDown, SlidersHorizontal, Plus,
   Lightbulb, Link as LinkIcon,
   Utensils, Coffee, Compass, BedDouble, Tag, MoreHorizontal, X, Martini,
-  ChevronsUpDown, GripVertical,
+  GripVertical,
 } from 'lucide-react'
 
 // Module-level singleton, same pattern the old bare anon client used — this
@@ -407,7 +407,6 @@ export default function Home() {
     { question: string; options: { id: string; label: string }[]; conversation: any[]; tool_call_id: string } | null
   >(null)
   const agentChatRef = useRef<HTMLDivElement>(null)
-  const workspaceBoxRef = useRef<HTMLDivElement>(null)
   const mainRef = useRef<HTMLElement>(null)
   const [showCustomize, setShowCustomize] = useState(false)
   const [showTripMenu, setShowTripMenu] = useState(false)
@@ -426,7 +425,7 @@ export default function Home() {
   const [saveForLaterCount, setSaveForLaterCount] = useState(0)
   const [markerPopup, setMarkerPopup] = useState<{ stopId: string; anchorRect: DOMRect } | null>(null)
   const [panelWidthPx, setPanelWidthPx] = useState(400)
-  const [sheetHeightVh, setSheetHeightVh] = useState(55)
+  const [mobileView, setMobileView] = useState<'map' | 'list'>('map')
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -772,40 +771,17 @@ export default function Home() {
     window.addEventListener('pointerup', onUp)
   }
 
-  // Mobile: drag the sheet handle to reveal more/less of the itinerary over the map,
-  // snapping to a peek/half/full position on release.
-  function handleSheetDragStart(e: React.PointerEvent) {
-    e.preventDefault()
-    const boxHeight = workspaceBoxRef.current?.getBoundingClientRect().height || 600
-    const startY = e.clientY
-    const startHeightVh = sheetHeightVh
-    function onMove(moveEvent: PointerEvent) {
-      const deltaPercent = ((startY - moveEvent.clientY) / boxHeight) * 100
-      setSheetHeightVh(Math.min(92, Math.max(12, startHeightVh + deltaPercent)))
-    }
-    function onUp() {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      setSheetHeightVh(prev => {
-        const snapPoints = [22, 55, 90]
-        return snapPoints.reduce((closest, p) => Math.abs(p - prev) < Math.abs(closest - prev) ? p : closest)
-      })
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
   // Clicking a pin should surface its stop in the itinerary list: highlight it
   // (same highlight state hovering a row already drives) and scroll it into view.
-  // On mobile the sheet may be collapsed too low to show anything, so open it first.
+  // On mobile the list isn't on screen at all while viewing the map (see the
+  // Map/List toggle below) — the floating PlacePopup already shows full stop
+  // details right over the pin there, so skip the list-scroll on mobile
+  // instead of forcing a view switch the user didn't ask for.
   function handleMarkerClick(stopId: string, anchorRect: DOMRect) {
     setMarkerPopup({ stopId, anchorRect })
     setHoveredStopId(stopId)
-    const isMobile = window.innerWidth < 1024
-    if (isMobile && sheetHeightVh < 55) setSheetHeightVh(55)
-    setTimeout(() => {
-      document.getElementById(`stop-${stopId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
-    }, isMobile && sheetHeightVh < 55 ? 200 : 0)
+    if (window.innerWidth < 1024) return
+    document.getElementById(`stop-${stopId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
   }
 
   // Beli-style save with no trip attached — files into the per-city Inbox
@@ -2671,28 +2647,38 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Mobile: map always visible as the base layer, itinerary as a draggable sheet on top.
-                      Drag the handle to reveal more or less — never a full stack, never map-less. */}
-                  <div ref={workspaceBoxRef} className="lg:hidden relative w-full rounded-lg overflow-hidden" style={{ height: '80vh', minHeight: 520 }}>
-                    <div className="absolute inset-0">{buildMapNode(0)}</div>
-                    <div
-                      className="absolute z-10 inset-x-0 bottom-0 bg-white shadow-2xl flex flex-col rounded-t-2xl"
-                      style={{ height: `${sheetHeightVh}%`, transition: 'height 0.15s ease' }}
-                    >
-                      <div
-                        onPointerDown={handleSheetDragStart}
-                        className="flex flex-col items-center gap-1 pt-2 pb-2.5 shrink-0 cursor-ns-resize touch-none active:bg-black/[0.02]"
+                  {/* Mobile: Map and List are separate full-screen views, switched with a
+                      tap — no drag-to-resize sheet. Dragging fought the same cramped-space
+                      problem no matter how it was tuned, and felt glitchy doing it. */}
+                  <div className="lg:hidden w-full">
+                    <div className="flex items-center gap-1 mb-3 p-1 bg-black/[0.04] rounded-lg w-fit mx-auto">
+                      <button
+                        onClick={() => setMobileView('map')}
+                        className={`px-5 py-1.5 rounded-md text-sm font-medium transition-colors ${mobileView === 'map' ? 'bg-white text-[#0A0A0A] shadow-sm' : 'text-[#6B6B6B]'}`}
                       >
-                        <div className="w-12 h-1.5 rounded-full bg-[#D4D4D4]" />
-                        <ChevronsUpDown size={12} strokeWidth={2} className="text-[#C4C4C4]" />
-                      </div>
-                      {editableDays.length > 1 && (
-                        <div className="px-4 pb-2 shrink-0">{dayLegend}</div>
-                      )}
-                      <div className="flex flex-col flex-1 min-h-0 px-4 pb-3 overflow-hidden">
-                        {renderItineraryPanel('carousel')}
-                      </div>
+                        Map
+                      </button>
+                      <button
+                        onClick={() => setMobileView('list')}
+                        className={`px-5 py-1.5 rounded-md text-sm font-medium transition-colors ${mobileView === 'list' ? 'bg-white text-[#0A0A0A] shadow-sm' : 'text-[#6B6B6B]'}`}
+                      >
+                        List
+                      </button>
                     </div>
+                    {mobileView === 'map' ? (
+                      <div className="relative w-full rounded-lg overflow-hidden" style={{ height: '75vh', minHeight: 480 }}>
+                        {buildMapNode(0)}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col" style={{ height: '75vh', minHeight: 480 }}>
+                        {editableDays.length > 1 && (
+                          <div className="pb-2 shrink-0">{dayLegend}</div>
+                        )}
+                        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                          {renderItineraryPanel('carousel')}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </>
               )
