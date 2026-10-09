@@ -19,7 +19,7 @@ import {
   ChevronDown, SlidersHorizontal, Plus,
   Lightbulb, Link as LinkIcon,
   Utensils, Coffee, Compass, BedDouble, Tag, MoreHorizontal, X, Martini,
-  GripVertical, Footprints,
+  GripVertical, Footprints, Car,
 } from 'lucide-react'
 
 // Module-level singleton, same pattern the old bare anon client used — this
@@ -2760,9 +2760,10 @@ export default function Home() {
                                     const mins = Math.round(leg.durationSeconds / 60)
                                     const km = leg.distanceMeters / 1000
                                     const distLabel = km >= 1 ? `${km.toFixed(1)} km` : `${leg.distanceMeters} m`
+                                    const Icon = leg.mode === 'drive' ? Car : Footprints
                                     return (
                                       <p className={`flex items-center gap-1 text-[10px] mt-1 ${stop.id === hoveredStopId ? 'text-white/60' : 'text-[#A3A3A3]'}`}>
-                                        <Footprints size={10} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min to next · {distLabel}
+                                        <Icon size={10} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min {leg.mode} to next · {distLabel}
                                       </p>
                                     )
                                   })()}

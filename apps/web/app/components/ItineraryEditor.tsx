@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, Fragment } from 'react'
 import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart, Footprints } from 'lucide-react'
+import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart, Footprints, Car } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
 import PlaceReview from './PlaceReview'
 import { useRouteLegs } from '../../lib/useRouteLegs'
@@ -114,15 +114,16 @@ function GripIcon() {
   )
 }
 
-function WalkConnector({ leg }: { leg: { distanceMeters: number; durationSeconds: number } }) {
+function WalkConnector({ leg }: { leg: { distanceMeters: number; durationSeconds: number; mode: 'walk' | 'drive' } }) {
   const mins = Math.round(leg.durationSeconds / 60)
   const km = leg.distanceMeters / 1000
   const distLabel = km >= 1 ? `${km.toFixed(1)} km` : `${leg.distanceMeters} m`
+  const Icon = leg.mode === 'drive' ? Car : Footprints
   return (
     <div className="flex items-center gap-2 pl-9 pr-4 py-1">
       <div className="w-px h-4 bg-[#E5E5E5] ml-[3px]" />
       <span className="flex items-center gap-1 text-[11px] text-[#A3A3A3]">
-        <Footprints size={11} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min · {distLabel}
+        <Icon size={11} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min {leg.mode} · {distLabel}
       </span>
     </div>
   )

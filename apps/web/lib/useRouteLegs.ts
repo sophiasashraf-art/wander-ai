@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 
-export interface RouteLeg { distanceMeters: number; durationSeconds: number }
+export interface RouteLeg { distanceMeters: number; durationSeconds: number; mode: 'walk' | 'drive' }
 interface StopLike { id: string; lat?: number; lng?: number }
 interface DayLike { stops: StopLike[] }
 
