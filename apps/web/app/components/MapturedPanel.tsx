@@ -65,24 +65,28 @@ export default function MapturedPanel({ open, onClose, onSelectTrip }: {
   // rendering 700 buttons client-side visibly froze the panel (confirmed
   // directly: the fetch itself took ~1.5s, but the resulting render never
   // recovered). ilike + limit(20), debounced, keeps this to a handful of
-  // rows at a time regardless of how many trips/places exist.
+  // rows at a time regardless of how many trips/places exist. With no query
+  // yet, show the most recently saved ones instead of a blank box — easy to
+  // forget exactly what you called something, more useful to browse than to
+  // have to already know what to type.
   useEffect(() => {
-    if (!showAdd || !addQuery.trim()) { setCandidates([]); setAddLoading(false); return }
+    if (!showAdd) { setCandidates([]); setAddLoading(false); return }
     setAddLoading(true)
     const timer = setTimeout(async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setCandidates([]); setAddLoading(false); return }
-      const { data } = await supabase
+      let query = supabase
         .from('places')
         .select('id, name, city, trips!inner(destination, user_id)')
         .eq('visited', false)
         .eq('trips.user_id', user.id)
-        .ilike('name', `%${addQuery.trim()}%`)
-        .order('name')
-        .limit(20)
+      query = addQuery.trim()
+        ? query.ilike('name', `%${addQuery.trim()}%`).order('name')
+        : query.order('created_at', { ascending: false })
+      const { data } = await query.limit(20)
       setCandidates(((data as any) || []))
       setAddLoading(false)
-    }, 300)
+    }, addQuery.trim() ? 300 : 0)
     return () => clearTimeout(timer)
   }, [showAdd, addQuery])
 
@@ -146,14 +150,16 @@ export default function MapturedPanel({ open, onClose, onSelectTrip }: {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto py-1">
-              {!addQuery.trim() && (
-                <p className="text-xs text-[#A3A3A3] text-center py-8 px-6">Type to search your saved places</p>
+              {!addQuery.trim() && !addLoading && candidates.length > 0 && (
+                <p className="text-[10px] uppercase tracking-widest text-[#A3A3A3] px-4 pt-2 pb-1">Recently saved</p>
               )}
-              {addQuery.trim() && addLoading && (
-                <p className="text-xs text-[#A3A3A3] text-center py-8">Searching...</p>
+              {addLoading && (
+                <p className="text-xs text-[#A3A3A3] text-center py-8">{addQuery.trim() ? 'Searching...' : 'Loading...'}</p>
               )}
-              {addQuery.trim() && !addLoading && candidates.length === 0 && (
-                <p className="text-xs text-[#A3A3A3] text-center py-8 px-6">No matches — it may already be marked been here.</p>
+              {!addLoading && candidates.length === 0 && (
+                <p className="text-xs text-[#A3A3A3] text-center py-8 px-6">
+                  {addQuery.trim() ? 'No matches — it may already be marked been here.' : "Everything you've saved is already marked been here."}
+                </p>
               )}
               {candidates.map(c => (
                 <button
