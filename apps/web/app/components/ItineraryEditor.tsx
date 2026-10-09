@@ -7,6 +7,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart, Footprints } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
 import PlaceReview from './PlaceReview'
+import { useRouteLegs } from '../../lib/useRouteLegs'
 
 const DAY_COLORS = ['#3D5AFE', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
@@ -614,39 +615,8 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
 
-  // Walk time between consecutive stops, keyed by [dayIndex][stopId] = the leg
-  // from that stop to the next one. One computeRoutes call per day (not per
-  // pair) — see /api/route-distance. Fingerprinted on coordinates only (not
-  // times/notes/names) so editing a note doesn't re-trigger every day's fetch.
-  const [legsByDay, setLegsByDay] = useState<Record<number, Record<string, { distanceMeters: number; durationSeconds: number }>>>({})
-  const legsFingerprintRef = useRef('')
-
-  useEffect(() => {
-    const fingerprint = days
-      .map(d => d.stops.filter(s => s.lat && s.lng).map(s => `${s.id}:${s.lat?.toFixed(5)},${s.lng?.toFixed(5)}`).join(','))
-      .join('|')
-    if (fingerprint === legsFingerprintRef.current) return
-    legsFingerprintRef.current = fingerprint
-
-    days.forEach(async (day, dayIndex) => {
-      const stopsWithCoords = day.stops.filter(s => s.lat && s.lng)
-      if (stopsWithCoords.length < 2) return
-      try {
-        const res = await fetch('/api/route-distance', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stops: stopsWithCoords.map(s => ({ lat: s.lat, lng: s.lng })) }),
-        })
-        const data = await res.json()
-        const legs = data.legs || []
-        const byStopId: Record<string, { distanceMeters: number; durationSeconds: number }> = {}
-        stopsWithCoords.forEach((s, i) => { if (legs[i]) byStopId[s.id] = legs[i] })
-        setLegsByDay(prev => ({ ...prev, [dayIndex]: byStopId }))
-      } catch {
-        // No distances for this day — connectors just don't render, not a crash.
-      }
-    })
-  }, [days])
+  // Shared with page.tsx's mobile Map-view stop carousel — see useRouteLegs.
+  const legsByDay = useRouteLegs(days)
 
   function update(newDays: Day[]) {
     onChange(newDays.map(d => ({ ...d, stops: recalcTimes(d.stops) })))

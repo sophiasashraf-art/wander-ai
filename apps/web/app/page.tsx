@@ -12,13 +12,14 @@ import CityAutocomplete from './components/CityAutocomplete'
 import DurationSpinner from './components/DurationSpinner'
 import WorldMapPin from './components/WorldMapPin'
 import PlaceReview from './components/PlaceReview'
+import { useRouteLegs } from '../lib/useRouteLegs'
 import {
   Menu, MapPin, Route, Sparkles, CalendarDays, Bot, Search, Camera, Heart,
   Leaf, Scale, Zap, ArrowRight, Pencil, Eye, Star, Check, Undo2,
   ChevronDown, SlidersHorizontal, Plus,
   Lightbulb, Link as LinkIcon,
   Utensils, Coffee, Compass, BedDouble, Tag, MoreHorizontal, X, Martini,
-  GripVertical,
+  GripVertical, Footprints,
 } from 'lucide-react'
 
 // Module-level singleton, same pattern the old bare anon client used — this
@@ -385,6 +386,7 @@ export default function Home() {
   const [startDate, setStartDate] = useState('') // YYYY-MM-DD
   const [itinerary, setItinerary] = useState<any>(null)
   const [editableDays, setEditableDays] = useState<Day[]>([])
+  const legsByDay = useRouteLegs(editableDays)
   const [undoSnapshot, setUndoSnapshot] = useState<Day[] | null>(null)
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -680,6 +682,13 @@ export default function Home() {
     setTripSaved(trip.saved || false)
     window.history.replaceState({}, '', `?trip=${id}`)
     isRestoringRef.current = false
+    // Land on the actual map/itinerary, not the composer/search — that's what
+    // you're here for when picking a trip from the sidebar, not the add-places
+    // input above it. Short delay since the workspace only renders once the
+    // state set above has actually painted.
+    setTimeout(() => {
+      document.getElementById('map-itinerary-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 150)
   }
 
   async function promoteFromInbox(id: string) {
@@ -2310,7 +2319,7 @@ export default function Home() {
 
       {/* Map + Itinerary */}
       {(itinerary?.days || (saved && editableDays.some(d => d.stops.length > 0))) && (
-        <div className="w-full max-w-[1400px] mt-16">
+        <div id="map-itinerary-workspace" className="w-full max-w-[1400px] mt-16">
           {/* Share toast */}
           {shareToast && (
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0A0A0A] text-white text-xs px-4 py-2.5 rounded-md shadow-lg z-50">
@@ -2745,6 +2754,18 @@ export default function Home() {
                                     <p className={`text-[10px] font-medium mb-0.5 ${stop.id === hoveredStopId ? 'text-white/60' : 'text-[#A3A3A3]'}`}>{stop.time}</p>
                                   )}
                                   <p className="text-sm font-medium truncate pr-5">{stop.name}</p>
+                                  {(() => {
+                                    const leg = legsByDay[clampedDayIndex]?.[stop.id]
+                                    if (!leg) return null
+                                    const mins = Math.round(leg.durationSeconds / 60)
+                                    const km = leg.distanceMeters / 1000
+                                    const distLabel = km >= 1 ? `${km.toFixed(1)} km` : `${leg.distanceMeters} m`
+                                    return (
+                                      <p className={`flex items-center gap-1 text-[10px] mt-1 ${stop.id === hoveredStopId ? 'text-white/60' : 'text-[#A3A3A3]'}`}>
+                                        <Footprints size={10} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min to next · {distLabel}
+                                      </p>
+                                    )
+                                  })()}
                                   {!viewOnly && (
                                     <button
                                       onClick={e => {
