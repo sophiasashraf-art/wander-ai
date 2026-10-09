@@ -11,6 +11,7 @@ import PlaceSearch from './components/PlaceSearch'
 import CityAutocomplete from './components/CityAutocomplete'
 import DurationSpinner from './components/DurationSpinner'
 import WorldMapPin from './components/WorldMapPin'
+import PlaceReview from './components/PlaceReview'
 import {
   Menu, MapPin, Route, Sparkles, CalendarDays, Bot, Search, Camera, Heart,
   Leaf, Scale, Zap, ArrowRight, Pencil, Eye, Star, Check, Undo2,
@@ -202,6 +203,7 @@ function PlaceListPopup({ place, destination, anchorRect, onClose }: {
             className="mt-2.5 inline-flex items-center gap-1 text-xs text-[#3D5AFE] hover:text-[#2E45D6] font-medium transition-colors">
             Open in Google Maps ↗
           </a>
+          {place.id && <PlaceReview placeId={place.id} />}
         </div>
       </div>
     </>
