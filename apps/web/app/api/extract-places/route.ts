@@ -151,11 +151,15 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
       })
     )
 
-    console.log('enriched places:', enrichedPlaces.map((p: any) => `${p.name}: ${p.lat},${p.lng}`))
+    // upsertPlace can come back with place: null (e.g. an insert RLS silently
+    // rejected — a stale/expired session with a stale tripId still in hand)
+    // rather than throwing, so this isn't caught by the outer try/catch either.
+    const validPlaces = enrichedPlaces.filter(Boolean)
+    console.log('enriched places:', validPlaces.map((p: any) => `${p.name}: ${p.lat},${p.lng}`))
 
     // Placeholders are already real rows (inserted above) — include them so the
     // client shows "fetching…" right away instead of waiting on a realtime event.
-    return NextResponse.json({ places: [...enrichedPlaces, ...placeholders] })
+    return NextResponse.json({ places: [...validPlaces, ...placeholders] })
 
   } catch (e: any) {
     console.error('ERROR:', e)
