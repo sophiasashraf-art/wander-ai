@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart } from 'lucide-react'
+import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart, Footprints } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
 import PlaceReview from './PlaceReview'
 
@@ -110,6 +110,20 @@ function GripIcon() {
       <circle cx="4" cy="11" r="1.2" fill="currentColor" />
       <circle cx="10" cy="11" r="1.2" fill="currentColor" />
     </svg>
+  )
+}
+
+function WalkConnector({ leg }: { leg: { distanceMeters: number; durationSeconds: number } }) {
+  const mins = Math.round(leg.durationSeconds / 60)
+  const km = leg.distanceMeters / 1000
+  const distLabel = km >= 1 ? `${km.toFixed(1)} km` : `${leg.distanceMeters} m`
+  return (
+    <div className="flex items-center gap-2 pl-9 pr-4 py-1">
+      <div className="w-px h-4 bg-[#E5E5E5] ml-[3px]" />
+      <span className="flex items-center gap-1 text-[11px] text-[#A3A3A3]">
+        <Footprints size={11} strokeWidth={2} /> {mins < 1 ? '<1' : mins} min · {distLabel}
+      </span>
+    </div>
   )
 }
 
@@ -600,6 +614,40 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
 
+  // Walk time between consecutive stops, keyed by [dayIndex][stopId] = the leg
+  // from that stop to the next one. One computeRoutes call per day (not per
+  // pair) — see /api/route-distance. Fingerprinted on coordinates only (not
+  // times/notes/names) so editing a note doesn't re-trigger every day's fetch.
+  const [legsByDay, setLegsByDay] = useState<Record<number, Record<string, { distanceMeters: number; durationSeconds: number }>>>({})
+  const legsFingerprintRef = useRef('')
+
+  useEffect(() => {
+    const fingerprint = days
+      .map(d => d.stops.filter(s => s.lat && s.lng).map(s => `${s.id}:${s.lat?.toFixed(5)},${s.lng?.toFixed(5)}`).join(','))
+      .join('|')
+    if (fingerprint === legsFingerprintRef.current) return
+    legsFingerprintRef.current = fingerprint
+
+    days.forEach(async (day, dayIndex) => {
+      const stopsWithCoords = day.stops.filter(s => s.lat && s.lng)
+      if (stopsWithCoords.length < 2) return
+      try {
+        const res = await fetch('/api/route-distance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stops: stopsWithCoords.map(s => ({ lat: s.lat, lng: s.lng })) }),
+        })
+        const data = await res.json()
+        const legs = data.legs || []
+        const byStopId: Record<string, { distanceMeters: number; durationSeconds: number }> = {}
+        stopsWithCoords.forEach((s, i) => { if (legs[i]) byStopId[s.id] = legs[i] })
+        setLegsByDay(prev => ({ ...prev, [dayIndex]: byStopId }))
+      } catch {
+        // No distances for this day — connectors just don't render, not a crash.
+      }
+    })
+  }, [days])
+
   function update(newDays: Day[]) {
     onChange(newDays.map(d => ({ ...d, stops: recalcTimes(d.stops) })))
   }
@@ -737,19 +785,25 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
               <div className={`border border-[#E5E5E5] rounded-b-2xl ${isCarousel ? 'flex-1 min-h-0 overflow-y-auto' : 'overflow-hidden'}`}>
                 <DroppableDay id={`day-${day.day}`}>
                   <SortableContext items={day.stops.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                    {day.stops.map(stop => (
-                      <StopRow key={stop.id} stop={stop} dayColor={color}
-                        onDelete={() => deleteStop(dayIndex, stop.id)}
-                        onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
-                        onNoteChange={note => updateStopNote(dayIndex, stop.id, note)}
-                        onNameChange={name => updateStopName(dayIndex, stop.id, name)}
-                        viewOnly={viewOnly}
-                        destination={destination}
-                        onHoverStop={onHoverStop}
-                        highlighted={stop.id === highlightedStopId}
-                        tripId={tripId}
-                      />
-                    ))}
+                    {day.stops.map(stop => {
+                      const leg = legsByDay[dayIndex]?.[stop.id]
+                      return (
+                        <Fragment key={stop.id}>
+                          <StopRow stop={stop} dayColor={color}
+                            onDelete={() => deleteStop(dayIndex, stop.id)}
+                            onTimeChange={time => updateStopTime(dayIndex, stop.id, time)}
+                            onNoteChange={note => updateStopNote(dayIndex, stop.id, note)}
+                            onNameChange={name => updateStopName(dayIndex, stop.id, name)}
+                            viewOnly={viewOnly}
+                            destination={destination}
+                            onHoverStop={onHoverStop}
+                            highlighted={stop.id === highlightedStopId}
+                            tripId={tripId}
+                          />
+                          {leg && <WalkConnector leg={leg} />}
+                        </Fragment>
+                      )
+                    })}
                   </SortableContext>
                 </DroppableDay>
                 {!viewOnly && <AddStopInput destination={destination} onAdd={(name, note, time, lat, lng) => addStop(dayIndex, name, note, time, lat, lng)} />}
