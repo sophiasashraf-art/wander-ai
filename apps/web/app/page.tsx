@@ -428,6 +428,7 @@ export default function Home() {
   const [mobileView, setMobileView] = useState<'map' | 'list'>('map')
   const [mobileDayIndex, setMobileDayIndex] = useState(0)
   const mobileDayStripRef = useRef<HTMLDivElement>(null)
+  const mobileStopCarouselRef = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -782,7 +783,14 @@ export default function Home() {
   function handleMarkerClick(stopId: string, anchorRect: DOMRect) {
     setMarkerPopup({ stopId, anchorRect })
     setHoveredStopId(stopId)
-    if (window.innerWidth < 1024) return
+    if (window.innerWidth < 1024) {
+      // Mobile Map view: keep the stop-card carousel in sync with which pin
+      // was tapped, same way swiping the carousel pans the map to match.
+      mobileStopCarouselRef.current
+        ?.querySelector(`[data-stop-id="${stopId}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+      return
+    }
     document.getElementById(`stop-${stopId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
   }
 
@@ -2675,6 +2683,7 @@ export default function Home() {
                       const clampedDayIndex = Math.min(mobileDayIndex, Math.max(0, editableDays.length - 1))
                       const activeDay = editableDays[clampedDayIndex]
                       const dayMarkers = activeDay ? mapMarkers.filter((m: any) => m.day === activeDay.day) : mapMarkers
+                      const activeDayStops = activeDay ? activeDay.stops.filter((s: any) => dayMarkers.some((m: any) => m.id === s.id)) : []
                       return (
                         <div className="relative w-full rounded-lg overflow-hidden" style={{ height: '75vh', minHeight: 480 }}>
                           <div className="absolute inset-0">{buildMapNode(0, dayMarkers)}</div>
@@ -2701,6 +2710,40 @@ export default function Home() {
                                 >
                                   <div style={{ width: 7, height: 7, borderRadius: '50%', background: DAY_COLORS[i % DAY_COLORS.length] }} />
                                   <span className="text-xs font-medium text-[#0A0A0A] truncate">Day {day.day} — {day.title}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {activeDayStops.length > 0 && (
+                            // Swipe through individual stops — map pans/zooms to follow via
+                            // hoveredStopId (same mechanism MapController already uses to pan
+                            // to a hovered list row, just driven by this carousel on mobile
+                            // instead). Tapping a pin does the reverse via handleMarkerClick.
+                            <div
+                              ref={mobileStopCarouselRef}
+                              className="absolute bottom-3 inset-x-3 z-10 flex gap-2 overflow-x-auto snap-x snap-mandatory"
+                              style={{ scrollbarWidth: 'none' }}
+                              onScroll={e => {
+                                const el = e.currentTarget
+                                const cardWidth = el.firstElementChild?.clientWidth || el.clientWidth
+                                const gap = 8
+                                const idx = Math.round(el.scrollLeft / (cardWidth + gap))
+                                const stop = activeDayStops[idx]
+                                if (stop) setHoveredStopId(stop.id)
+                              }}
+                            >
+                              {activeDayStops.map((stop: any, i: number) => (
+                                <button
+                                  key={stop.id}
+                                  data-stop-id={stop.id}
+                                  onClick={() => setHoveredStopId(stop.id)}
+                                  className={`snap-center shrink-0 text-left px-3.5 py-2.5 rounded-lg shadow-md transition-colors ${stop.id === hoveredStopId ? 'bg-[#0A0A0A] text-white' : 'bg-white/95 backdrop-blur-sm text-[#0A0A0A]'}`}
+                                  style={{ width: '78%' }}
+                                >
+                                  {stop.time && (
+                                    <p className={`text-[10px] font-medium mb-0.5 ${stop.id === hoveredStopId ? 'text-white/60' : 'text-[#A3A3A3]'}`}>{stop.time}</p>
+                                  )}
+                                  <p className="text-sm font-medium truncate">{stop.name}</p>
                                 </button>
                               ))}
                             </div>
