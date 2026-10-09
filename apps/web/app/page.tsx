@@ -6,6 +6,7 @@ import { createClient } from '../lib/supabase/client'
 import { APIProvider, Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import ItineraryEditor, { Day, recalcTimes, sourceLabel, PlacePopup } from './components/ItineraryEditor'
 import TripsSidebar from './components/TripsSidebar'
+import MapturedPanel from './components/MapturedPanel'
 import AddMorePlaces from './components/AddMorePlaces'
 import PlaceSearch from './components/PlaceSearch'
 import CityAutocomplete from './components/CityAutocomplete'
@@ -426,6 +427,7 @@ export default function Home() {
   const isRestoringRef = useRef(false)
   const isRemoteUpdateRef = useRef(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [mapturedOpen, setMapturedOpen] = useState(false)
   const [viewOnly, setViewOnly] = useState(false)
   const [shareToast, setShareToast] = useState<string | null>(null)
   const [inputTab, setInputTab] = useState<'ai' | 'manual'>('ai')
@@ -1614,6 +1616,22 @@ export default function Home() {
       >
         <Menu size={18} strokeWidth={1.75} className="text-[#6B6B6B]" />
       </button>
+
+      {/* Maptured — "been there" ranked feed, mirrors the trips hamburger on the right.
+          Always shown (same as the hamburger) — a guest just sees the empty state,
+          same pattern TripsSidebar already uses. */}
+      <button
+        onClick={() => setMapturedOpen(true)}
+        className="fixed top-5 right-5 z-30 flex items-center justify-center w-10 h-10 rounded-full hover:bg-white/70 hover:shadow-sm transition-all"
+        aria-label="Open Maptured"
+      >
+        <Camera size={18} strokeWidth={1.75} className="text-[#6B6B6B]" />
+      </button>
+      <MapturedPanel
+        open={mapturedOpen}
+        onClose={() => setMapturedOpen(false)}
+        onSelectTrip={loadTrip}
+      />
 
       <h1 className="text-[2.75rem] leading-none font-semibold tracking-tight text-[#0A0A0A] mb-2.5">
         mapture<span className="text-[#3D5AFE]">.</span>
