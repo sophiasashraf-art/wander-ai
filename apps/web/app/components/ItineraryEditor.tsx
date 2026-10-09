@@ -846,7 +846,7 @@ export function recalcTimes(stops: Stop[]): Stop[] {
   // Only assign a new time to stops that have a default/empty time — never overwrite manually-set times.
   // A stop is considered manually-timed if it has manualTime: true OR if its time doesn't match
   // the category default (meaning the user changed it).
-  return stops.map(stop => {
+  const withTimes = stops.map(stop => {
     if (stop.manualTime) return stop // explicitly flagged as manual
     const defaultTime = formatHour(preferredHour(stop.category))
     if (stop.time && stop.time !== defaultTime && stop.time !== '12:00 PM') {
@@ -855,6 +855,14 @@ export function recalcTimes(stops: Stop[]): Stop[] {
     }
     return { ...stop, time: defaultTime }
   })
+  // Assigning a time doesn't by itself move a stop to the right spot in the
+  // array — a stop appended at the end keeps its array position even when
+  // its assigned time is earlier than stops before it, which is exactly the
+  // "8pm, then 1pm" ordering bug this was causing. parseTime is a stable
+  // sort key (declared below, hoisted), and the sort itself is stable, so
+  // same-time stops keep their existing relative order (e.g. after a manual
+  // drag-reorder) instead of being shuffled.
+  return [...withTimes].sort((a, b) => parseTime(a.time) - parseTime(b.time))
 }
 
 function parseTime(t: string): number {
