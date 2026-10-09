@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase/client'
-import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut } from 'lucide-react'
+import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound } from 'lucide-react'
 
 const supabase = createClient()
 
@@ -142,13 +142,22 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
                 Sign in
               </button>
             ) : (
-              <button
-                onClick={handleSignOut}
-                title="Sign out"
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
-              >
-                <LogOut size={15} strokeWidth={2} />
-              </button>
+              <>
+                <button
+                  onClick={() => router.push('/auth/update-password')}
+                  title="Change password"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
+                >
+                  <KeyRound size={15} strokeWidth={2} />
+                </button>
+                <button
+                  onClick={handleSignOut}
+                  title="Sign out"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
+                >
+                  <LogOut size={15} strokeWidth={2} />
+                </button>
+              </>
             )}
             <button
               onClick={onClose}
