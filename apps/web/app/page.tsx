@@ -426,6 +426,8 @@ export default function Home() {
   const [markerPopup, setMarkerPopup] = useState<{ stopId: string; anchorRect: DOMRect } | null>(null)
   const [panelWidthPx, setPanelWidthPx] = useState(400)
   const [mobileView, setMobileView] = useState<'map' | 'list'>('map')
+  const [mobileDayIndex, setMobileDayIndex] = useState(0)
+  const mobileDayStripRef = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -2593,7 +2595,10 @@ export default function Home() {
               const hoveredMarker = mapMarkers.find((m: any) => m.id === hoveredStopId) || null
               const geoMarkers = mapMarkers.map((m: any) => ({ lat: m.lat, lng: m.lng }))
 
-              const buildMapNode = (panelPaddingLeft: number) => (
+              const buildMapNode = (panelPaddingLeft: number, markersOverride?: any[]) => {
+                const activeMarkers = markersOverride ?? mapMarkers
+                const activeGeoMarkers = markersOverride ? markersOverride.map((m: any) => ({ lat: m.lat, lng: m.lng })) : geoMarkers
+                return (
                 <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
                   <Map
                     defaultCenter={mapCenter}
@@ -2604,8 +2609,8 @@ export default function Home() {
                     zoomControl
                     style={{ width: '100%', height: '100%' }}
                   >
-                    <MapController markers={geoMarkers} hoveredMarker={hoveredMarker} panelPaddingLeft={panelPaddingLeft} />
-                    {mapMarkers.map((marker: any, i: number) => (
+                    <MapController markers={activeGeoMarkers} hoveredMarker={hoveredMarker} panelPaddingLeft={panelPaddingLeft} />
+                    {activeMarkers.map((marker: any, i: number) => (
                       <AdvancedMarker
                         key={i}
                         position={{ lat: marker.lat, lng: marker.lng }}
@@ -2621,7 +2626,8 @@ export default function Home() {
                     ))}
                   </Map>
                 </APIProvider>
-              )
+                )
+              }
 
               return (
                 <>
@@ -2665,11 +2671,43 @@ export default function Home() {
                         List
                       </button>
                     </div>
-                    {mobileView === 'map' ? (
-                      <div className="relative w-full rounded-lg overflow-hidden" style={{ height: '75vh', minHeight: 480 }}>
-                        {buildMapNode(0)}
-                      </div>
-                    ) : (
+                    {mobileView === 'map' ? (() => {
+                      const clampedDayIndex = Math.min(mobileDayIndex, Math.max(0, editableDays.length - 1))
+                      const activeDay = editableDays[clampedDayIndex]
+                      const dayMarkers = activeDay ? mapMarkers.filter((m: any) => m.day === activeDay.day) : mapMarkers
+                      return (
+                        <div className="relative w-full rounded-lg overflow-hidden" style={{ height: '75vh', minHeight: 480 }}>
+                          <div className="absolute inset-0">{buildMapNode(0, dayMarkers)}</div>
+                          {editableDays.length > 1 && (
+                            // Swipe between days on this strip, not on the map itself — the
+                            // map already owns pan/zoom gestures, layering a swipe-to-change-day
+                            // handler on the same surface would fight it. Native CSS scroll-snap
+                            // instead of custom touch tracking, same mechanic as a photo gallery.
+                            <div
+                              ref={mobileDayStripRef}
+                              className="absolute top-3 inset-x-3 z-10 flex overflow-x-auto snap-x snap-mandatory rounded-full bg-white/90 backdrop-blur-sm shadow-md"
+                              style={{ scrollbarWidth: 'none' }}
+                              onScroll={e => {
+                                const el = e.currentTarget
+                                const idx = Math.round(el.scrollLeft / el.clientWidth)
+                                setMobileDayIndex(idx)
+                              }}
+                            >
+                              {editableDays.map((day: Day, i: number) => (
+                                <button
+                                  key={i}
+                                  onClick={() => mobileDayStripRef.current?.scrollTo({ left: i * mobileDayStripRef.current.clientWidth, behavior: 'smooth' })}
+                                  className="snap-center shrink-0 w-full flex items-center justify-center gap-1.5 py-2"
+                                >
+                                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: DAY_COLORS[i % DAY_COLORS.length] }} />
+                                  <span className="text-xs font-medium text-[#0A0A0A] truncate">Day {day.day} — {day.title}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })() : (
                       <div className="flex flex-col" style={{ height: '75vh', minHeight: 480 }}>
                         {editableDays.length > 1 && (
                           <div className="pb-2 shrink-0">{dayLegend}</div>
