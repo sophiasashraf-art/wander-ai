@@ -429,6 +429,7 @@ export default function Home() {
   const [mobileDayIndex, setMobileDayIndex] = useState(0)
   const mobileDayStripRef = useRef<HTMLDivElement>(null)
   const mobileStopCarouselRef = useRef<HTMLDivElement>(null)
+  const [showMobileAddPlace, setShowMobileAddPlace] = useState(false)
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -2733,20 +2734,77 @@ export default function Home() {
                               }}
                             >
                               {activeDayStops.map((stop: any, i: number) => (
-                                <button
+                                <div
                                   key={stop.id}
                                   data-stop-id={stop.id}
                                   onClick={() => setHoveredStopId(stop.id)}
-                                  className={`snap-center shrink-0 text-left px-3.5 py-2.5 rounded-lg shadow-md transition-colors ${stop.id === hoveredStopId ? 'bg-[#0A0A0A] text-white' : 'bg-white/95 backdrop-blur-sm text-[#0A0A0A]'}`}
+                                  className={`relative snap-center shrink-0 text-left px-3.5 py-2.5 rounded-lg shadow-md transition-colors cursor-pointer ${stop.id === hoveredStopId ? 'bg-[#0A0A0A] text-white' : 'bg-white/95 backdrop-blur-sm text-[#0A0A0A]'}`}
                                   style={{ width: '78%' }}
                                 >
                                   {stop.time && (
                                     <p className={`text-[10px] font-medium mb-0.5 ${stop.id === hoveredStopId ? 'text-white/60' : 'text-[#A3A3A3]'}`}>{stop.time}</p>
                                   )}
-                                  <p className="text-sm font-medium truncate">{stop.name}</p>
-                                </button>
+                                  <p className="text-sm font-medium truncate pr-5">{stop.name}</p>
+                                  {!viewOnly && (
+                                    <button
+                                      onClick={e => {
+                                        e.stopPropagation()
+                                        handleDaysChange(editableDays.map((d: Day, di: number) =>
+                                          di === clampedDayIndex ? { ...d, stops: d.stops.filter((s: any) => s.id !== stop.id) } : d
+                                        ))
+                                      }}
+                                      className={`absolute top-2 right-2 w-4 h-4 flex items-center justify-center rounded-full text-sm leading-none ${stop.id === hoveredStopId ? 'text-white/60 hover:text-white' : 'text-[#A3A3A3] hover:text-red-400'}`}
+                                      aria-label="Remove stop"
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
                               ))}
                             </div>
+                          )}
+                          {/* Adding/removing a stop shouldn't require switching to List — editing
+                              is a first-class action here too, not something you have to go find. */}
+                          {!viewOnly && tripId && (
+                            <>
+                              {showMobileAddPlace && (
+                                <div className="absolute inset-0 z-10" onClick={() => setShowMobileAddPlace(false)} />
+                              )}
+                              <button
+                                onClick={() => setShowMobileAddPlace(v => !v)}
+                                className="absolute top-14 right-3 z-30 w-9 h-9 flex items-center justify-center rounded-full bg-white shadow-md text-[#0A0A0A] hover:bg-[#FAFAFA] transition-colors"
+                                aria-label="Add a place"
+                              >
+                                <Plus size={16} strokeWidth={2.25} />
+                              </button>
+                              {showMobileAddPlace && (
+                                <>
+                                  <div className="absolute top-24 right-3 left-3 z-20 bg-white rounded-lg shadow-2xl p-3">
+                                    <PlaceSearch
+                                      tripId={tripId}
+                                      destination={destination}
+                                      onSaved={place => {
+                                        const newStop = {
+                                          id: `mobile-add-${Date.now()}-${place.name}`,
+                                          name: place.name,
+                                          time: '',
+                                          category: place.category || 'other',
+                                          note: place.description || '',
+                                          lat: place.lat,
+                                          lng: place.lng,
+                                          suggested: false,
+                                        }
+                                        const newDays = editableDays.map((d: Day, i: number) =>
+                                          i === clampedDayIndex ? { ...d, stops: recalcTimes([...d.stops, newStop]) } : d
+                                        )
+                                        handleDaysChange(newDays)
+                                        setShowMobileAddPlace(false)
+                                      }}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                            </>
                           )}
                         </div>
                       )
