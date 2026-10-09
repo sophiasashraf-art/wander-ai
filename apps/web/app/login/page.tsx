@@ -79,7 +79,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-full flex items-center justify-center px-5 py-16 overflow-hidden">
+    <div className="relative min-h-screen flex items-center justify-center px-5 py-16 overflow-hidden">
       <MapBackground />
       <div className="relative w-full max-w-sm">
         <h1 className="text-[2.25rem] leading-none font-semibold tracking-tight text-[#0A0A0A] mb-2.5 text-center">
