@@ -72,18 +72,20 @@ export async function scrapeUrl(url: string): Promise<string> {
 // background function, never from scrapeUrl/the synchronous extract routes.
 export async function transcribeViaApify(url: string): Promise<string> {
   const token = process.env.APIFY_API_TOKEN
-  if (!token) return ''
+  if (!token) { console.error('transcribeViaApify: APIFY_API_TOKEN not set in this environment'); return '' }
   try {
     const res = await fetch('https://api.apify.com/v2/actors/memo23~video-audio-transcriber/run-sync-get-dataset-items', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ mediaUrls: [url], model: 'tiny', maxMinutesPerItem: 3 }),
     })
-    if (!res.ok) return ''
+    if (!res.ok) { console.error('transcribeViaApify: Apify returned', res.status, await res.text().catch(() => '')); return '' }
     const items = await res.json()
     const text = items?.[0]?.text
+    if (typeof text !== 'string' || !text) { console.error('transcribeViaApify: no text field in response', JSON.stringify(items).slice(0, 500)) }
     return typeof text === 'string' ? text.slice(0, 5000) : ''
-  } catch {
+  } catch (e: any) {
+    console.error('transcribeViaApify: fetch threw', e?.message || e)
     return ''
   }
 }
