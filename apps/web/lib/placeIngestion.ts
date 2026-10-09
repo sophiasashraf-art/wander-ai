@@ -43,12 +43,6 @@ export async function scrapeTikTokOembed(url: string): Promise<string> {
   }
 }
 
-// Below this, a scrape result is treated as "too thin to be useful" (e.g. a
-// TikTok caption that's just emoji, or Firecrawl coming back near-empty on an
-// Instagram page it couldn't render) — worth a transcript instead, but that's
-// slow (tens of seconds) and has to happen out of band, see transcribeViaApify.
-export const MIN_USEFUL_SCRAPE_LENGTH = 60
-
 export function isTranscribableLink(url: string): boolean {
   return url.includes('tiktok.com') || url.includes('instagram.com')
 }
