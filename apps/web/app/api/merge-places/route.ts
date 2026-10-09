@@ -1,11 +1,12 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabase'
+import { createClient } from '../../../lib/supabase/server'
 
 const openai = new OpenAI()
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
     const { tripId, newPlaces } = await req.json()
 
     const { data: trip } = await supabase

@@ -1,18 +1,33 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../../lib/supabase'
+import { createAdminClient } from '../../../../lib/supabase/admin'
 import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel } from '../../../../lib/placeIngestion'
 
 const openai = new OpenAI()
 
 // Shared entry point for the iOS "Save to Mapture" Shortcut: takes whatever text/link
 // was shared, extracts places, and files each one into a per-city inbox trip —
-// no destination or trip context required up front.
+// no destination or trip context required up front. The Shortcut has no browser
+// session, so it authenticates with a per-user share_token (Settings -> this
+// user's personal token) in the x-inbox-key header instead of a cookie. Every
+// trip/place this creates is explicitly stamped with that user's id using the
+// service-role client, since there's no session for RLS to key off of here.
 export async function POST(req: Request) {
   try {
-    if (process.env.INBOX_SHARED_SECRET && req.headers.get('x-inbox-key') !== process.env.INBOX_SHARED_SECRET) {
+    const shareToken = req.headers.get('x-inbox-key')
+    if (!shareToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+    const supabase = createAdminClient()
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('user_id')
+      .eq('share_token', shareToken)
+      .maybeSingle()
+    if (!profile) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    const userId = profile.user_id
 
     const { text } = await req.json()
     if (!text || !text.trim()) {
@@ -102,13 +117,14 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
         .from('trips')
         .select('id')
         .eq('is_inbox', true)
+        .eq('user_id', userId)
         .ilike('destination', city)
         .maybeSingle()
 
       if (!trip) {
         const { data: newTrip, error: tripError } = await supabase
           .from('trips')
-          .insert({ destination: city, duration: '0 days', vibe: 'balanced', is_inbox: true, saved: false })
+          .insert({ destination: city, duration: '0 days', vibe: 'balanced', is_inbox: true, saved: false, user_id: userId })
           .select()
           .single()
         if (tripError || !newTrip) {
@@ -130,7 +146,7 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
           source_url: p.source_url,
           raw_input: rawInput,
           source: 'pasted_text',
-        }, p._verified))
+        }, p._verified, supabase))
       )
 
       results.push({ city, added: upserted.filter(r => !r.deduped).length })

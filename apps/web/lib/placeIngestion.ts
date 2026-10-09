@@ -1,6 +1,6 @@
 import { Client } from '@googlemaps/google-maps-services-js'
 import { FirecrawlAppV1 as FirecrawlApp } from 'firecrawl'
-import { supabase } from './supabase'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! })
 const maps = new Client()
@@ -283,7 +283,8 @@ function buildFullFieldSet(candidate: PlaceCandidate, verified: VerifiedPlace | 
 // inference against a partial unique index. So: manual select-then-write.
 export async function upsertPlace(
   candidate: PlaceCandidate,
-  verified: VerifiedPlace | null
+  verified: VerifiedPlace | null,
+  supabase: SupabaseClient,
 ): Promise<{ place: any; deduped: boolean }> {
   const write = buildFullFieldSet(candidate, verified)
 

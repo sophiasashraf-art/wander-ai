@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabase'
+import { createClient } from '../../../lib/supabase/server'
 import { geocodePlace } from '../../../lib/placeIngestion'
 import {
   defaultHour, clampToWindow, fmtHour, parseMin, fmtMin, routeStopsForDay, isAnchorCategory,
@@ -10,6 +10,7 @@ const openai = new OpenAI()
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
     const { tripId, arrivalTime, departureTime, fromScratch } = await req.json()
 
     const { data: trip } = await supabase.from('trips').select('*').eq('id', tripId).single()

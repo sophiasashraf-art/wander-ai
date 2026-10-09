@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabase'
+import { createClient } from '../../../lib/supabase/server'
 import { Client } from '@googlemaps/google-maps-services-js'
 
 const openai = new OpenAI()
@@ -100,6 +100,7 @@ async function geocodePlace(name: string, city: string): Promise<{ lat: number; 
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
     // cities: [{ name: string, days: number }]
     // vibe, text (optional scraped content), tripId
     const { cities, vibe, text, tripId, arrivalTime, departureTime } = await req.json()

@@ -1,12 +1,13 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabase'
+import { createClient } from '../../../lib/supabase/server'
 import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
     const { text, tripId } = await req.json()
 
     const urls = extractUrls(text)
@@ -105,7 +106,7 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
           source_url: p.source_url,
           raw_input: rawInput,
           source: 'pasted_text',
-        }, verified)
+        }, verified, supabase)
         return place
       })
     )

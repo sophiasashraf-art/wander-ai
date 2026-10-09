@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { useRouter } from 'next/navigation'
+import { createClient } from '../lib/supabase/client'
 import { APIProvider, Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import ItineraryEditor, { Day, recalcTimes, sourceLabel, PlacePopup } from './components/ItineraryEditor'
 import TripsSidebar from './components/TripsSidebar'
@@ -18,6 +19,10 @@ import {
   Utensils, Coffee, Compass, BedDouble, Tag, MoreHorizontal, X, Martini,
   ChevronsUpDown, GripVertical,
 } from 'lucide-react'
+
+// Module-level singleton, same pattern the old bare anon client used — this
+// one is session-aware (cookie-backed) so RLS applies correctly once enabled.
+const supabase = createClient()
 
 // ── Share dropdown ──
 function ShareButton({ onShare }: { onShare: (viewOnly: boolean) => void }) {
@@ -411,6 +416,24 @@ export default function Home() {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
+  // Auth gate. The real security boundary is RLS at the database level, not
+  // this redirect — this just sends a signed-out visitor to /login instead of
+  // showing them a blank/broken workspace. session.user.id is what every new
+  // trip gets stamped with below.
+  const router = useRouter()
+  const [session, setSession] = useState<any>(null)
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      if (!data.session) router.replace('/login')
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession)
+      if (!newSession) router.replace('/login')
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [router])
+
   // Register service worker for PWA
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -633,7 +656,7 @@ export default function Home() {
     if (!dest) return null
     const { data: trip, error } = await supabase
       .from('trips')
-      .insert({ destination: dest, duration: `${duration} days`, vibe })
+      .insert({ destination: dest, duration: `${duration} days`, vibe, user_id: session?.user?.id })
       .select()
       .single()
     if (error || !trip) return null
@@ -996,7 +1019,7 @@ export default function Home() {
     if (!currentTripId) {
       const { data: trip, error: tripError } = await supabase
         .from('trips')
-        .insert({ destination: effectiveDestination, duration: `${effectiveDuration} days`, vibe })
+        .insert({ destination: effectiveDestination, duration: `${effectiveDuration} days`, vibe, user_id: session?.user?.id })
         .select()
         .single()
       if (tripError || !trip) {
@@ -1263,7 +1286,7 @@ export default function Home() {
       const totalDays = validCities.reduce((s, c) => s + c.days, 0)
       const { data: trip } = await supabase
         .from('trips')
-        .insert({ destination: label, duration: `${totalDays} days`, vibe })
+        .insert({ destination: label, duration: `${totalDays} days`, vibe, user_id: session?.user?.id })
         .select().single()
       if (trip) {
         currentTripId = trip.id

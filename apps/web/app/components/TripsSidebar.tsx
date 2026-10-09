@@ -1,8 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
-import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '../../lib/supabase/client'
+import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut } from 'lucide-react'
+
+const supabase = createClient()
 
 interface Trip {
   id: string
@@ -53,39 +56,53 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
   useEffect(() => {
     if (!open) return
     setLoading(true)
-    supabase
-      .from('trips')
-      .select('id, destination, duration, vibe, created_at, itinerary')
-      .eq('saved', true)
-      .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        setTrips((data || []).filter((t: Trip) => t.destination))
-        setLoading(false)
-      })
+    // Scoped by user_id explicitly, not just left to RLS — this is the actual
+    // "my trips" query and should only ever ask for this user's rows.
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) { setTrips([]); setInboxCities([]); setLoading(false); return }
 
-    supabase
-      .from('trips')
-      .select('id, destination')
-      .eq('is_inbox', true)
-      .order('destination')
-      .then(async ({ data: inboxTrips }) => {
-        if (!inboxTrips || inboxTrips.length === 0) { setInboxCities([]); return }
-        const tripIds = inboxTrips.map((t: any) => t.id)
-        const { data: allPlaces } = await supabase
-          .from('places')
-          .select('trip_id, name, category')
-          .in('trip_id', tripIds)
-        setInboxCities(
-          inboxTrips
-            .map((t: any) => ({
-              tripId: t.id,
-              city: t.destination,
-              places: (allPlaces || []).filter((p: any) => p.trip_id === t.id),
-            }))
-            .filter((c: InboxCity) => c.places.length > 0)
-        )
-      })
+      supabase
+        .from('trips')
+        .select('id, destination, duration, vibe, created_at, itinerary')
+        .eq('saved', true)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .then(({ data }) => {
+          setTrips((data || []).filter((t: Trip) => t.destination))
+          setLoading(false)
+        })
+
+      supabase
+        .from('trips')
+        .select('id, destination')
+        .eq('is_inbox', true)
+        .eq('user_id', user.id)
+        .order('destination')
+        .then(async ({ data: inboxTrips }) => {
+          if (!inboxTrips || inboxTrips.length === 0) { setInboxCities([]); return }
+          const tripIds = inboxTrips.map((t: any) => t.id)
+          const { data: allPlaces } = await supabase
+            .from('places')
+            .select('trip_id, name, category')
+            .in('trip_id', tripIds)
+          setInboxCities(
+            inboxTrips
+              .map((t: any) => ({
+                tripId: t.id,
+                city: t.destination,
+                places: (allPlaces || []).filter((p: any) => p.trip_id === t.id),
+              }))
+              .filter((c: InboxCity) => c.places.length > 0)
+          )
+        })
+    })
   }, [open])
+
+  const router = useRouter()
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+    router.replace('/login')
+  }
 
   function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -114,12 +131,21 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
           <span className="text-lg font-semibold tracking-tight text-[#0A0A0A]">
             mapture<span className="text-[#3D5AFE]">.</span>
           </span>
-          <button
-            onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
-          >
-            <X size={16} strokeWidth={2} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleSignOut}
+              title="Sign out"
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
+            >
+              <LogOut size={15} strokeWidth={2} />
+            </button>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
+            >
+              <X size={16} strokeWidth={2} />
+            </button>
+          </div>
         </div>
 
         {/* New trip button */}

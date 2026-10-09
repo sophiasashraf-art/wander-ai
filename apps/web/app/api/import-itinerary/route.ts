@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabase'
+import { createClient } from '../../../lib/supabase/server'
 import { verifyPlace, upsertPlace, VerifiedPlace } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
@@ -28,6 +28,7 @@ async function enrichWithCoordinates(place: any, destination: string): Promise<a
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
     const { text, tripId, destination, duration } = await req.json()
     const numDays = parseInt(duration) || 3
 
@@ -193,7 +194,7 @@ Return valid JSON only:
             why_recommended: p.why_recommended || null,
             raw_input: rawInput,
             source: 'pasted_text',
-          }, p._verified ?? null))
+          }, p._verified ?? null, supabase))
       )
     }
 
