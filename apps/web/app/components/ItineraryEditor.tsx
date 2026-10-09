@@ -5,6 +5,8 @@ import { DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent, P
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { MapPin, Clock, AlertTriangle, Star, Sparkles, Lightbulb, Link as LinkIcon, Heart } from 'lucide-react'
+import { createClient } from '../../lib/supabase/client'
+import PlaceReview from './PlaceReview'
 
 const DAY_COLORS = ['#3D5AFE', '#7A9E7E', '#5C8AAE', '#9B6DAB', '#B85C38']
 
@@ -34,6 +36,7 @@ interface Props {
   onHoverStop?: (stopId: string | null) => void
   highlightedStopId?: string | null
   layout?: 'stack' | 'carousel'
+  tripId?: string | null
 }
 
 // Parse time from text like "beach 9am" → { name: "beach", time: "9:00 AM" }
@@ -110,12 +113,12 @@ function GripIcon() {
   )
 }
 
-function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameChange, viewOnly = false, destination = '', onHoverStop, highlighted = false }: {
+function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameChange, viewOnly = false, destination = '', onHoverStop, highlighted = false, tripId }: {
   stop: Stop; dayColor: string; onDelete: () => void
   onTimeChange: (time: string) => void; onNoteChange: (note: string) => void
   onNameChange: (name: string) => void
   viewOnly?: boolean; destination?: string; onHoverStop?: (stopId: string | null) => void
-  highlighted?: boolean
+  highlighted?: boolean; tripId?: string | null
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: stop.id })
   const [editing, setEditing] = useState(false)
@@ -213,6 +216,7 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
                 destination={destination}
                 anchorRect={anchorRect}
                 onClose={() => setShowPopup(false)}
+                tripId={tripId}
               />
             )}
           </div>
@@ -265,9 +269,21 @@ function StopRow({ stop, dayColor, onDelete, onTimeChange, onNoteChange, onNameC
 // category yet, e.g. the homepage's saved-place cards) can reuse this popup too.
 export type PopupPlace = Pick<Stop, 'name'> & Partial<Omit<Stop, 'name'>>
 
-export function PlacePopup({ stop, destination, anchorRect, onClose }: {
-  stop: PopupPlace; destination: string; anchorRect: DOMRect; onClose: () => void
+export function PlacePopup({ stop, destination, anchorRect, onClose, tripId }: {
+  stop: PopupPlace; destination: string; anchorRect: DOMRect; onClose: () => void; tripId?: string | null
 }) {
+  // Stops only carry a name/category snapshot, not the underlying places.id —
+  // resolve it so the "been here" review (keyed on the real places row) can
+  // show up here too, not just in the saved-places list popup.
+  const [placeId, setPlaceId] = useState<string | null>(null)
+  useEffect(() => {
+    setPlaceId(null)
+    if (!tripId) return
+    const supabase = createClient()
+    supabase.from('places').select('id').eq('trip_id', tripId).eq('name', stop.name).maybeSingle()
+      .then(({ data }) => setPlaceId(data?.id || null))
+  }, [tripId, stop.name])
+
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.name + (destination ? ` ${destination}` : ''))}`
 
   const POPUP_W = 260
@@ -402,6 +418,7 @@ export function PlacePopup({ stop, destination, anchorRect, onClose }: {
           >
             Open in Google Maps ↗
           </a>
+          {placeId && <PlaceReview placeId={placeId} />}
         </div>
       </div>
     </>
@@ -579,7 +596,7 @@ function DayTitle({ title, dayIndex, viewOnly, onChange }: {
   )
 }
 
-export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '', onHoverStop, highlightedStopId, layout = 'stack' }: Props) {
+export default function ItineraryEditor({ days, onChange, startDate = '', viewOnly = false, destination = '', onHoverStop, highlightedStopId, layout = 'stack', tripId }: Props) {
   const [activeStop, setActiveStop] = useState<{ stop: Stop; dayIndex: number } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: viewOnly ? { distance: 999999 } : { distance: 5 } }))
 
@@ -730,6 +747,7 @@ export default function ItineraryEditor({ days, onChange, startDate = '', viewOn
                         destination={destination}
                         onHoverStop={onHoverStop}
                         highlighted={stop.id === highlightedStopId}
+                        tripId={tripId}
                       />
                     ))}
                   </SortableContext>

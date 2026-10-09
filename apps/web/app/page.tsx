@@ -2060,6 +2060,7 @@ export default function Home() {
               }}
               startDate={startDate}
               destination={destination}
+              tripId={tripId}
             />
             <button
               onClick={async () => {
@@ -2315,6 +2316,7 @@ export default function Home() {
             onChange={setEditableDays}
             startDate={startDate}
             destination={destination}
+            tripId={tripId}
           />
         </div>
       )}
@@ -2537,7 +2539,7 @@ export default function Home() {
                 )}
                 {/* Draggable day cards */}
                 <div className={layout === 'carousel' ? 'flex-1 min-h-0' : ''}>
-                  <ItineraryEditor days={editableDays} onChange={handleDaysChange} startDate={startDate} viewOnly={viewOnly} destination={destination} onHoverStop={setHoveredStopId} highlightedStopId={hoveredStopId} layout={layout} />
+                  <ItineraryEditor days={editableDays} onChange={handleDaysChange} startDate={startDate} viewOnly={viewOnly} destination={destination} onHoverStop={setHoveredStopId} highlightedStopId={hoveredStopId} layout={layout} tripId={tripId} />
                 </div>
               </>
             )
