@@ -4,7 +4,12 @@
   publish = ".next"
 
 [build.environment]
-  NODE_VERSION = "20"
+  # @supabase/supabase-js's RealtimeClient needs native WebSocket, Node 22+ only
+  # — it initializes unconditionally even for admin/service-role clients that
+  # never touch realtime, so this crashed the transcribe-place background
+  # function (and would crash any other function using the admin client) on
+  # Node 20. Confirmed via the function's own invoke log.
+  NODE_VERSION = "22"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
