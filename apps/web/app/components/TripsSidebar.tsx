@@ -38,6 +38,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
   const [expandedCity, setExpandedCity] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [isGuest, setIsGuest] = useState(false)
 
   async function handleDelete(e: React.MouseEvent, tripId: string) {
     e.stopPropagation()
@@ -59,6 +60,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
     // Scoped by user_id explicitly, not just left to RLS — this is the actual
     // "my trips" query and should only ever ask for this user's rows.
     supabase.auth.getUser().then(({ data: { user } }) => {
+      setIsGuest(!user)
       if (!user) { setTrips([]); setInboxCities([]); setLoading(false); return }
 
       supabase
@@ -132,13 +134,22 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
             mapture<span className="text-[#3D5AFE]">.</span>
           </span>
           <div className="flex items-center gap-1">
-            <button
-              onClick={handleSignOut}
-              title="Sign out"
-              className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
-            >
-              <LogOut size={15} strokeWidth={2} />
-            </button>
+            {isGuest ? (
+              <button
+                onClick={() => router.push('/login')}
+                className="text-xs font-medium text-[#3D5AFE] hover:text-[#2E45D6] transition-colors px-1.5"
+              >
+                Sign in
+              </button>
+            ) : (
+              <button
+                onClick={handleSignOut}
+                title="Sign out"
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
+              >
+                <LogOut size={15} strokeWidth={2} />
+              </button>
+            )}
             <button
               onClick={onClose}
               className="w-7 h-7 flex items-center justify-center rounded-lg text-[#6B6B6B] hover:text-[#0A0A0A] hover:bg-[rgba(0,0,0,0.04)] transition-all"
@@ -205,7 +216,20 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
           {loading && (
             <p className="text-xs text-[#A3A3A3] text-center py-8">Loading trips...</p>
           )}
-          {!loading && trips.length === 0 && (
+          {!loading && isGuest && (
+            <div className="text-center py-12 px-6">
+              <Compass size={26} strokeWidth={1.5} className="mx-auto mb-3 text-[#A3A3A3]" />
+              <p className="text-sm text-[#6B6B6B]">Browsing as guest</p>
+              <p className="text-xs text-[#A3A3A3] mt-1 mb-3">Trips you build won't be saved.</p>
+              <button
+                onClick={() => router.push('/login')}
+                className="text-xs font-medium text-[#3D5AFE] hover:text-[#2E45D6] transition-colors"
+              >
+                Sign in to save your trips →
+              </button>
+            </div>
+          )}
+          {!loading && !isGuest && trips.length === 0 && (
             <div className="text-center py-12 px-6">
               <Compass size={26} strokeWidth={1.5} className="mx-auto mb-3 text-[#A3A3A3]" />
               <p className="text-sm text-[#6B6B6B]">No saved trips yet</p>

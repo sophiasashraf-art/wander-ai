@@ -419,17 +419,21 @@ export default function Home() {
   // Auth gate. The real security boundary is RLS at the database level, not
   // this redirect — this just sends a signed-out visitor to /login instead of
   // showing them a blank/broken workspace. session.user.id is what every new
-  // trip gets stamped with below.
+  // trip gets stamped with below. "Continue as guest" on /login sets this
+  // sessionStorage flag so a signed-out visitor who chose that isn't bounced
+  // straight back — everything still works, it just never persists (see
+  // ensureTripCreated and the other trip-creation sites below).
   const router = useRouter()
   const [session, setSession] = useState<any>(null)
   useEffect(() => {
+    const isGuest = () => typeof window !== 'undefined' && sessionStorage.getItem('mapture_guest') === '1'
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
-      if (!data.session) router.replace('/login')
+      if (!data.session && !isGuest()) router.replace('/login')
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession)
-      if (!newSession) router.replace('/login')
+      if (!newSession && !isGuest()) router.replace('/login')
     })
     return () => listener.subscription.unsubscribe()
   }, [router])
@@ -654,6 +658,14 @@ export default function Home() {
       ? cities.filter(c => c.name.trim()).map(c => c.name.trim()).join(', ')
       : destination.trim()
     if (!dest) return null
+    if (!session) {
+      // Guest: RLS would reject this insert anyway — skip the doomed network
+      // call and use a local-only id instead. Everything downstream already
+      // treats a truthy tripId as "there's a trip," it just never persists.
+      const localId = crypto.randomUUID()
+      setTripId(localId)
+      return localId
+    }
     const { data: trip, error } = await supabase
       .from('trips')
       .insert({ destination: dest, duration: `${duration} days`, vibe, user_id: session?.user?.id })
@@ -1017,18 +1029,24 @@ export default function Home() {
     }
 
     if (!currentTripId) {
-      const { data: trip, error: tripError } = await supabase
-        .from('trips')
-        .insert({ destination: effectiveDestination, duration: `${effectiveDuration} days`, vibe, user_id: session?.user?.id })
-        .select()
-        .single()
-      if (tripError || !trip) {
-        console.error('Failed to create trip:', tripError)
-        setLoading(false)
-        return
+      if (!session) {
+        // Guest: skip the insert RLS would reject anyway, use a local-only id.
+        currentTripId = crypto.randomUUID()
+        setTripId(currentTripId)
+      } else {
+        const { data: trip, error: tripError } = await supabase
+          .from('trips')
+          .insert({ destination: effectiveDestination, duration: `${effectiveDuration} days`, vibe, user_id: session?.user?.id })
+          .select()
+          .single()
+        if (tripError || !trip) {
+          console.error('Failed to create trip:', tripError)
+          setLoading(false)
+          return
+        }
+        currentTripId = trip.id
+        setTripId(currentTripId)
       }
-      currentTripId = trip.id
-      setTripId(currentTripId)
       if (tripMode === 'multi') {
         setDestination(effectiveDestination)
         setDuration(effectiveDuration)
@@ -1284,13 +1302,19 @@ export default function Home() {
     if (!currentTripId) {
       const label = validCities.map(c => c.name).join(' → ')
       const totalDays = validCities.reduce((s, c) => s + c.days, 0)
-      const { data: trip } = await supabase
-        .from('trips')
-        .insert({ destination: label, duration: `${totalDays} days`, vibe, user_id: session?.user?.id })
-        .select().single()
-      if (trip) {
-        currentTripId = trip.id
-        setTripId(trip.id)
+      if (!session) {
+        // Guest: skip the insert RLS would reject anyway, use a local-only id.
+        currentTripId = crypto.randomUUID()
+        setTripId(currentTripId)
+      } else {
+        const { data: trip } = await supabase
+          .from('trips')
+          .insert({ destination: label, duration: `${totalDays} days`, vibe, user_id: session?.user?.id })
+          .select().single()
+        if (trip) {
+          currentTripId = trip.id
+          setTripId(trip.id)
+        }
       }
     } else {
       const label = validCities.map(c => c.name).join(' → ')

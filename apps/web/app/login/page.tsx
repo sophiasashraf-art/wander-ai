@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase/client'
 
 export default function LoginPage() {
+  const router = useRouter()
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [error, setError] = useState('')
@@ -26,16 +28,9 @@ export default function LoginPage() {
     setStatus('sent')
   }
 
-  async function handleAppleSignIn() {
-    const supabase = createClient()
-    const { error: appleError } = await supabase.auth.signInWithOAuth({
-      provider: 'apple',
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    })
-    if (appleError) {
-      setStatus('error')
-      setError(appleError.message)
-    }
+  function handleContinueAsGuest() {
+    sessionStorage.setItem('mapture_guest', '1')
+    router.push('/')
   }
 
   return (
@@ -47,19 +42,6 @@ export default function LoginPage() {
         <p className="text-[#6B6B6B] text-sm mb-10 text-center">Sign in to plan your trips.</p>
 
         <div className="bg-white border border-[#E5E5E5] rounded-lg p-6">
-          <button
-            onClick={handleAppleSignIn}
-            className="w-full flex items-center justify-center gap-2 bg-[#0A0A0A] text-white text-sm font-medium py-2.5 rounded-lg hover:bg-[#1A1A1A] transition-colors mb-4"
-          >
-            Sign in with Apple
-          </button>
-
-          <div className="flex items-center gap-3 my-4">
-            <div className="flex-1 h-px bg-[#E5E5E5]" />
-            <span className="text-xs text-[#A3A3A3]">or</span>
-            <div className="flex-1 h-px bg-[#E5E5E5]" />
-          </div>
-
           {status === 'sent' ? (
             <p className="text-sm text-[#0A0A0A] text-center py-2">
               Check <strong>{email}</strong> for a sign-in link.
@@ -87,6 +69,20 @@ export default function LoginPage() {
           {status === 'error' && (
             <p className="text-xs text-[#D14343] mt-3 text-center">{error}</p>
           )}
+
+          <div className="flex items-center gap-3 my-4">
+            <div className="flex-1 h-px bg-[#E5E5E5]" />
+            <span className="text-xs text-[#A3A3A3]">or</span>
+            <div className="flex-1 h-px bg-[#E5E5E5]" />
+          </div>
+
+          <button
+            onClick={handleContinueAsGuest}
+            className="w-full text-sm text-[#6B6B6B] hover:text-[#0A0A0A] py-1.5 transition-colors"
+          >
+            Continue as guest
+          </button>
+          <p className="text-xs text-[#A3A3A3] text-center mt-1.5">You can look around and build a trip — it just won't be saved.</p>
         </div>
       </div>
     </div>
