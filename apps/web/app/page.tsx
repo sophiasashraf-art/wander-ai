@@ -118,6 +118,39 @@ function MapController({ markers, hoveredMarker, panelPaddingLeft }: {
   return null
 }
 
+// @vis.gl/react-google-maps doesn't ship a <Polyline> — same useMap()
+// pattern as MapController above, just drawing a line instead of fitting
+// bounds. One instance per day, reused across renders (set via setPath, not
+// recreated) so panning/zooming doesn't flicker it.
+function DayRoutePolyline({ path, color }: { path: { lat: number; lng: number }[]; color: string }) {
+  const map = useMap()
+  const polylineRef = useRef<google.maps.Polyline | null>(null)
+  const pathKey = path.map(p => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join('|')
+
+  useEffect(() => {
+    if (!map) return
+    if (!polylineRef.current) {
+      polylineRef.current = new google.maps.Polyline({
+        strokeColor: color,
+        strokeOpacity: 0.85,
+        strokeWeight: 4,
+        geodesic: true,
+        zIndex: 1,
+      })
+    }
+    polylineRef.current.setOptions({ strokeColor: color })
+    polylineRef.current.setPath(path)
+    polylineRef.current.setMap(map)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, pathKey, color])
+
+  useEffect(() => {
+    return () => { polylineRef.current?.setMap(null); polylineRef.current = null }
+  }, [map])
+
+  return null
+}
+
 // ── Place popup for extracted places list ──
 function PlaceListPopup({ place, destination, anchorRect, onClose }: {
   place: any; destination: string; anchorRect: DOMRect; onClose: () => void
@@ -2616,6 +2649,14 @@ export default function Home() {
               const buildMapNode = (panelPaddingLeft: number, markersOverride?: any[]) => {
                 const activeMarkers = markersOverride ?? mapMarkers
                 const activeGeoMarkers = markersOverride ? markersOverride.map((m: any) => ({ lat: m.lat, lng: m.lng })) : geoMarkers
+                // One line per day, in visit order — markers already carry a `day` and
+                // preserve stop order within it (see mapMarkers' flatMap), so grouping
+                // by day and connecting in array order traces the actual planned route
+                // instead of just showing numbered pins with no sense of the path between them.
+                const routesByDay = activeMarkers.reduce((acc: Record<number, any[]>, m: any) => {
+                  (acc[m.day] ||= []).push(m)
+                  return acc
+                }, {})
                 return (
                 <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
                   <Map
@@ -2628,6 +2669,15 @@ export default function Home() {
                     style={{ width: '100%', height: '100%' }}
                   >
                     <MapController markers={activeGeoMarkers} hoveredMarker={hoveredMarker} panelPaddingLeft={panelPaddingLeft} />
+                    {Object.entries(routesByDay).map(([day, markers]) => (
+                      markers.length > 1 && (
+                        <DayRoutePolyline
+                          key={day}
+                          path={markers.map((m: any) => ({ lat: m.lat, lng: m.lng }))}
+                          color={markers[0].color}
+                        />
+                      )
+                    ))}
                     {activeMarkers.map((marker: any, i: number) => (
                       <AdvancedMarker
                         key={i}
