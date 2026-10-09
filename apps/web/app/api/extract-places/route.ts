@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { NextResponse } from 'next/server'
 import { createClient } from '../../../lib/supabase/server'
-import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel } from '../../../lib/placeIngestion'
+import { extractUrls, scrapeUrl, verifyPlace, upsertPlace, platformLabel, isTranscribableLink, MIN_USEFUL_SCRAPE_LENGTH } from '../../../lib/placeIngestion'
 
 const openai = new OpenAI()
 
@@ -12,11 +12,53 @@ export async function POST(req: Request) {
 
     const urls = extractUrls(text)
     let enrichedText = text
+    const placeholders: any[] = []
 
     if (urls.length > 0) {
       const scraped = await Promise.all(urls.map(scrapeUrl))
+
+      // A TikTok/Instagram link that scraped too thin to be useful (often: the
+      // place is only ever said out loud in the video, never typed anywhere) is
+      // worth a real transcript — but that takes 30+ seconds, too slow to hold
+      // this request open for. Only worth doing when there's a real trip to
+      // attach the result to later (not a guest's local-only session).
+      const { data: { user } } = await supabase.auth.getUser()
+      const thinUrls = new Set(
+        user && tripId
+          ? urls.filter((url, i) => isTranscribableLink(url) && scraped[i].length < MIN_USEFUL_SCRAPE_LENGTH)
+          : []
+      )
+
+      if (thinUrls.size > 0) {
+        const inserted = await Promise.all([...thinUrls].map(async url => {
+          const { data } = await supabase.from('places').insert({
+            trip_id: tripId,
+            name: `Fetching ${platformLabel(url)} content…`,
+            category: 'other',
+            source_url: url,
+            source: 'pasted_text',
+            processing: true,
+          }).select().single()
+          return data
+        }))
+        placeholders.push(...inserted.filter(Boolean))
+
+        // Fire the background job per link — just confirming Netlify accepted
+        // the invocation (202), not waiting for it to finish. Signed with a
+        // shared secret since this background function runs with the
+        // service-role key (bypasses RLS) and has no other way to verify the
+        // request came from us and not an arbitrary caller who found the URL.
+        await Promise.all(placeholders.map(p =>
+          fetch(`${new URL(req.url).origin}/bg/transcribe-place`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.BACKGROUND_FUNCTION_SECRET! },
+            body: JSON.stringify({ placeholderId: p.id, tripId, url: p.source_url }),
+          }).catch(e => console.error('Failed to trigger transcribe-place background job:', e))
+        ))
+      }
+
       const scrapedContent = urls
-        .map((url, i) => scraped[i] ? `[Source: ${url}]\n${scraped[i]}` : '')
+        .map((url, i) => !thinUrls.has(url) && scraped[i] ? `[Source: ${url}]\n${scraped[i]}` : '')
         .filter(Boolean)
         .join('\n\n')
       if (scrapedContent) {
@@ -60,8 +102,10 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
 
     // A link that scraped fine but named no identifiable place (e.g. a TikTok whose
     // caption is just emoji) would otherwise vanish with no feedback. Keep the link
-    // itself as a placeholder save rather than silently dropping it.
-    if (result.places.length === 0 && singleUrl) {
+    // itself as a placeholder save rather than silently dropping it. Not when it's
+    // already covered by a transcribing placeholder above — that one fills in for
+    // real once the background job finishes, this one would just duplicate it.
+    if (result.places.length === 0 && singleUrl && !placeholders.some(p => p.source_url === singleUrl)) {
       result.places = [{
         name: `Saved from ${platformLabel(singleUrl)}`,
         category: 'other',
@@ -113,7 +157,9 @@ Return valid JSON only, no markdown. Format: {"places": [{"name": "...", "catego
 
     console.log('enriched places:', enrichedPlaces.map((p: any) => `${p.name}: ${p.lat},${p.lng}`))
 
-    return NextResponse.json({ places: enrichedPlaces })
+    // Placeholders are already real rows (inserted above) — include them so the
+    // client shows "fetching…" right away instead of waiting on a realtime event.
+    return NextResponse.json({ places: [...enrichedPlaces, ...placeholders] })
 
   } catch (e: any) {
     console.error('ERROR:', e)

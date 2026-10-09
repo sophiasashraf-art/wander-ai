@@ -43,10 +43,19 @@ export async function scrapeTikTokOembed(url: string): Promise<string> {
   }
 }
 
+// Below this, a scrape result is treated as "too thin to be useful" (e.g. a
+// TikTok caption that's just emoji, or Firecrawl coming back near-empty on an
+// Instagram page it couldn't render) — worth a transcript instead, but that's
+// slow (tens of seconds) and has to happen out of band, see transcribeViaApify.
+export const MIN_USEFUL_SCRAPE_LENGTH = 60
+
+export function isTranscribableLink(url: string): boolean {
+  return url.includes('tiktok.com') || url.includes('instagram.com')
+}
+
 export async function scrapeUrl(url: string): Promise<string> {
   if (url.includes('tiktok.com')) {
-    const oembed = await scrapeTikTokOembed(url)
-    if (oembed) return oembed
+    return scrapeTikTokOembed(url)
   }
   try {
     const result = await firecrawl.scrapeUrl(url, { formats: ['markdown'] }) as any
@@ -56,6 +65,33 @@ export async function scrapeUrl(url: string): Promise<string> {
     console.error('Scrape failed for', url)
   }
   return ''
+}
+
+// Fallback for when the caption/scrape alone isn't enough — a lot of place
+// names are only ever said out loud in the video, never typed in the caption.
+// Runs yt-dlp + Whisper under the hood (no login needed for public content);
+// we call it as a hosted actor rather than running that pipeline ourselves
+// since this needs to run from a Netlify background function, not a great fit
+// for shelling out to ffmpeg/whisper locally. Confirmed via direct testing:
+// a 19s clip took 37.7s wall time — nowhere near fast enough to run inline in
+// a request/response cycle, which is why this is only ever called from the
+// background function, never from scrapeUrl/the synchronous extract routes.
+export async function transcribeViaApify(url: string): Promise<string> {
+  const token = process.env.APIFY_API_TOKEN
+  if (!token) return ''
+  try {
+    const res = await fetch('https://api.apify.com/v2/actors/memo23~video-audio-transcriber/run-sync-get-dataset-items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ mediaUrls: [url], model: 'tiny', maxMinutesPerItem: 3 }),
+    })
+    if (!res.ok) return ''
+    const items = await res.json()
+    const text = items?.[0]?.text
+    return typeof text === 'string' ? text.slice(0, 5000) : ''
+  } catch {
+    return ''
+  }
 }
 
 export interface VerifiedPlace {
@@ -253,7 +289,7 @@ export interface PlaceCandidate {
   source: PlaceSource
 }
 
-function buildFullFieldSet(candidate: PlaceCandidate, verified: VerifiedPlace | null) {
+export function buildFullFieldSet(candidate: PlaceCandidate, verified: VerifiedPlace | null) {
   return {
     name: candidate.name,
     category: candidate.category ?? null,

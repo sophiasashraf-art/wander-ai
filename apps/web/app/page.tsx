@@ -216,6 +216,18 @@ function PlaceListItem({ place, destination, categoryColors, onRemove }: {
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
   const isGeolocated = !!(place.lat && place.lng)
 
+  if (place.processing) {
+    return (
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-[#EFEFEF] last:border-0">
+        <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#A3A3A3] animate-pulse" />
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-[#6B6B6B]">{place.name}</span>
+        </div>
+        <span className="text-xs text-[#A3A3A3] shrink-0">transcribing…</span>
+      </div>
+    )
+  }
+
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-[#EFEFEF] last:border-0 group relative">
       <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#3D5AFE]" />
@@ -557,6 +569,41 @@ export default function Home() {
       return () => { supabase.removeChannel(channel) }
     })()
   }, [])
+
+  // A TikTok/Instagram link that scraped too thin gets a "Fetching…" placeholder
+  // place row immediately, filled in later by a Netlify background function once
+  // transcription finishes (tens of seconds — too slow to hold the original
+  // request open for, see extract-places/route.ts and transcribe-place.mts).
+  // This picks up that fill-in live instead of requiring a reload. Keyed on
+  // tripId (not tied to the one-time trip-load effect above) so it's also live
+  // for a trip created mid-session, not just one loaded from a ?trip= link.
+  useEffect(() => {
+    if (!tripId) return
+    const channel = supabase
+      .channel(`places-${tripId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'places',
+        filter: `trip_id=eq.${tripId}`,
+      }, payload => {
+        if (payload.eventType === 'DELETE') {
+          const oldId = (payload.old as any).id
+          setPlaces(prev => prev.filter(p => p.id !== oldId))
+          return
+        }
+        const updated = payload.new as any
+        setPlaces(prev => {
+          const idx = prev.findIndex(p => p.id === updated.id)
+          if (idx === -1) return [...prev, updated]
+          const next = [...prev]
+          next[idx] = updated
+          return next
+        })
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [tripId])
 
   // Debounced save whenever editableDays changes
   const saveItinerary = useCallback((days: Day[], id: string) => {
@@ -2409,22 +2456,24 @@ export default function Home() {
                 {unscheduledPlaces.length > 0 && (
                 <div className="grid grid-cols-2 gap-2">
                   {unscheduledPlaces.map((place, i) => (
-                    <div key={i} className="bg-white border border-[#E5E5E5] rounded-md p-3 group relative">
-                      <button
-                        onClick={async () => {
-                          setPlaces(prev => prev.filter(p => p.name !== place.name))
-                          await supabase.from('places').delete().eq('trip_id', tripId).eq('name', place.name)
-                        }}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 text-lg leading-none"
-                        aria-label="Remove place"
-                      >
-                        ×
-                      </button>
+                    <div key={i} className={`bg-white border border-[#E5E5E5] rounded-md p-3 group relative ${place.processing ? 'opacity-60' : ''}`}>
+                      {!place.processing && (
+                        <button
+                          onClick={async () => {
+                            setPlaces(prev => prev.filter(p => p.name !== place.name))
+                            await supabase.from('places').delete().eq('trip_id', tripId).eq('name', place.name)
+                          }}
+                          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[#A3A3A3] hover:text-red-400 text-lg leading-none"
+                          aria-label="Remove place"
+                        >
+                          ×
+                        </button>
+                      )}
                       <p className="text-xs text-[#3D5AFE] uppercase tracking-wider mb-1">
-                        {place.category}
+                        {place.processing ? 'transcribing…' : place.category}
                       </p>
                       <p className="text-sm font-medium text-[#0A0A0A] mb-2">{place.name}</p>
-                      <select
+                      {place.processing ? null : <select
                         defaultValue=""
                         onChange={e => {
                           const dayIndex = parseInt(e.target.value)
@@ -2450,7 +2499,7 @@ export default function Home() {
                         {editableDays.map((day, idx) => (
                           <option key={idx} value={idx}>Day {day.day} — {day.title}</option>
                         ))}
-                      </select>
+                      </select>}
                     </div>
                   ))}
                 </div>
