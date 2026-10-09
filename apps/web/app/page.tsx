@@ -427,13 +427,17 @@ export default function Home() {
   const [session, setSession] = useState<any>(null)
   useEffect(() => {
     const isGuest = () => typeof window !== 'undefined' && sessionStorage.getItem('mapture_guest') === '1'
+    // A shared trip link (?trip=...) must be openable by anyone it's sent to,
+    // logged in or not — RLS lets it through via trips.share_enabled, so the
+    // gate shouldn't bounce them to /login before they ever see it.
+    const hasSharedTrip = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('trip')
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
-      if (!data.session && !isGuest()) router.replace('/login')
+      if (!data.session && !isGuest() && !hasSharedTrip()) router.replace('/login')
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession)
-      if (!newSession && !isGuest()) router.replace('/login')
+      if (!newSession && !isGuest() && !hasSharedTrip()) router.replace('/login')
     })
     return () => listener.subscription.unsubscribe()
   }, [router])
@@ -683,12 +687,15 @@ export default function Home() {
     }
   }
 
-  function shareLink(viewOnlyMode: boolean) {
+  async function shareLink(viewOnlyMode: boolean) {
     const base = `${window.location.origin}?trip=${tripId}`
     const url = viewOnlyMode ? `${base}&view=1` : base
     navigator.clipboard.writeText(url)
     setShareToast(viewOnlyMode ? 'View-only link copied' : 'Edit link copied')
     setTimeout(() => setShareToast(null), 3000)
+    // RLS only lets non-owners read/write this trip once it's flagged shared —
+    // otherwise the link 404s for anyone but the owner.
+    if (tripId) await supabase.from('trips').update({ share_enabled: true }).eq('id', tripId)
   }
 
   async function handleSaveTrip() {
