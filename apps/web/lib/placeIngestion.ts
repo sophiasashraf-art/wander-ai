@@ -364,6 +364,25 @@ export async function upsertPlace(
     return { place: data, deduped: true }
   }
   const { data, error } = await supabase.from('places').insert(write).select().single()
+  if (error?.code === '23505') {
+    // Same race as the google_place_id path above — this select-then-insert
+    // isn't atomic, so two near-simultaneous upserts for the same name (e.g.
+    // a batch extraction calling upsertPlace in parallel via Promise.all,
+    // where the model listed the same place twice in one response — confirmed
+    // directly: a real duplicate pair's created_at matched to the millisecond)
+    // can both pass the check above before either commits. Falls back to
+    // update, same as the other branch, once places_trip_name_unverified_idx
+    // (see the SQL migration) gives Postgres something to actually catch it on.
+    const { data: retry } = await supabase
+      .from('places')
+      .update(write)
+      .eq('trip_id', candidate.trip_id)
+      .is('google_place_id', null)
+      .ilike('name', candidate.name.trim())
+      .select()
+      .single()
+    return { place: retry, deduped: true }
+  }
   if (error) console.error('places insert failed:', error)
   return { place: data, deduped: false }
 }

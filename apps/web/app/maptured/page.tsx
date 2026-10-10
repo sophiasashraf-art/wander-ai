@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Star, ChevronDown, Plus, Search, X, Compass } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
+import PlaceReview from '../components/PlaceReview'
 
 const supabase = createClient()
 
@@ -45,6 +46,8 @@ export default function MapturedPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [placesByCity, setPlacesByCity] = useState<Record<string, BeenPlace[]>>({})
   const [loadingCity, setLoadingCity] = useState<Record<string, boolean>>({})
+  const [countByCity, setCountByCity] = useState<Record<string, number>>({})
+  const [editingPlace, setEditingPlace] = useState<string | null>(null)
 
   const [showAdd, setShowAdd] = useState(false)
   const [addQuery, setAddQuery] = useState('')
@@ -72,8 +75,22 @@ export default function MapturedPage() {
         if (!groups.has(key)) groups.set(key, { key, label, tripIds: [] })
         groups.get(key)!.tripIds.push(t.id)
       }
-      setCities([...groups.values()].sort((a, b) => a.label.localeCompare(b.label)))
+      const sorted = [...groups.values()].sort((a, b) => a.label.localeCompare(b.label))
+      setCities(sorted)
       setLoading(false)
+
+      // Lightweight — head:true counts rows without transferring them, so
+      // this stays cheap even though it's one query per city (a handful of
+      // cities, not the 700-place scale problem the rest of this page
+      // deliberately avoids by never fetching more than one city at a time).
+      sorted.forEach(async city => {
+        const { count } = await supabase
+          .from('places')
+          .select('id', { count: 'exact', head: true })
+          .in('trip_id', city.tripIds)
+          .eq('visited', true)
+        setCountByCity(prev => ({ ...prev, [city.key]: count || 0 }))
+      })
     })()
   }, [router])
 
@@ -126,6 +143,7 @@ export default function MapturedPage() {
     const city = cities.find(c => c.key === cityKey)
     if (city) {
       setExpanded(prev => ({ ...prev, [city.key]: true }))
+      setCountByCity(prev => ({ ...prev, [city.key]: (prev[city.key] || 0) + 1 }))
       fetchCityPlaces(city)
     }
   }
@@ -169,11 +187,16 @@ export default function MapturedPage() {
                 onClick={() => toggleCity(city)}
                 className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-[rgba(0,0,0,0.02)] transition-colors"
               >
-                <span className="text-sm font-medium text-[#0A0A0A]">{city.label}</span>
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-medium text-[#0A0A0A] truncate">{city.label}</span>
+                  {countByCity[city.key] > 0 && (
+                    <span className="text-xs text-[#A3A3A3] shrink-0">{countByCity[city.key]}</span>
+                  )}
+                </span>
                 <ChevronDown
                   size={14}
                   strokeWidth={2}
-                  className={`text-[#A3A3A3] transition-transform ${expanded[city.key] ? 'rotate-180' : ''}`}
+                  className={`text-[#A3A3A3] shrink-0 transition-transform ${expanded[city.key] ? 'rotate-180' : ''}`}
                 />
               </button>
               {expanded[city.key] && (
@@ -187,19 +210,32 @@ export default function MapturedPage() {
                     </p>
                   )}
                   {placesByCity[city.key]?.map((p, i) => (
-                    <div key={p.id} className="flex items-start gap-3 px-4 py-3 border-b border-[#F5F5F5] last:border-0">
-                      <span className="text-xs font-semibold text-[#A3A3A3] w-4 pt-0.5 shrink-0">{i + 1}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-[#0A0A0A] truncate">{p.name}</p>
-                        {p.visited_rating && (
-                          <span className="flex items-center gap-0.5 text-xs text-[#3D5AFE] font-medium mt-0.5">
-                            <Star size={10} strokeWidth={2} className="fill-[#3D5AFE]" /> {p.visited_rating}
-                          </span>
-                        )}
-                        {p.visited_note && (
-                          <p className="text-xs text-[#6B6B6B] mt-1 leading-relaxed">{p.visited_note}</p>
-                        )}
-                      </div>
+                    <div key={p.id} className="px-4 py-3 border-b border-[#F5F5F5] last:border-0">
+                      <button
+                        onClick={() => setEditingPlace(prev => prev === p.id ? null : p.id)}
+                        className="w-full flex items-start gap-3 text-left"
+                      >
+                        <span className="text-xs font-semibold text-[#A3A3A3] w-4 pt-0.5 shrink-0">{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-[#0A0A0A] truncate">{p.name}</p>
+                          {p.visited_rating && (
+                            <span className="flex items-center gap-0.5 text-xs text-[#3D5AFE] font-medium mt-0.5">
+                              <Star size={10} strokeWidth={2} className="fill-[#3D5AFE]" /> {p.visited_rating}
+                            </span>
+                          )}
+                          {p.visited_note && (
+                            <p className="text-xs text-[#6B6B6B] mt-1 leading-relaxed">{p.visited_note}</p>
+                          )}
+                        </div>
+                      </button>
+                      {editingPlace === p.id && (
+                        <div className="pl-7">
+                          <PlaceReview
+                            placeId={p.id}
+                            onChange={() => fetchCityPlaces(city)}
+                          />
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

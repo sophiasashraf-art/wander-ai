@@ -13,7 +13,7 @@ interface Photo {
   url: string | null
 }
 
-export default function PlaceReview({ placeId }: { placeId: string }) {
+export default function PlaceReview({ placeId, onChange }: { placeId: string; onChange?: () => void }) {
   const [loading, setLoading] = useState(true)
   const [visited, setVisited] = useState(false)
   const [rating, setRating] = useState<number | null>(null)
@@ -57,16 +57,19 @@ export default function PlaceReview({ placeId }: { placeId: string }) {
   async function handleMarkVisited() {
     setVisited(true)
     await supabase.from('places').update({ visited: true }).eq('id', placeId)
+    onChange?.()
   }
 
   async function handleUnmarkVisited() {
     setVisited(false)
     await supabase.from('places').update({ visited: false }).eq('id', placeId)
+    onChange?.()
   }
 
   async function handleRate(stars: number) {
     setRating(stars)
     await supabase.from('places').update({ visited_rating: stars }).eq('id', placeId)
+    onChange?.()
   }
 
   function handleNoteChange(value: string) {
@@ -74,6 +77,7 @@ export default function PlaceReview({ placeId }: { placeId: string }) {
     if (noteTimerRef.current) clearTimeout(noteTimerRef.current)
     noteTimerRef.current = setTimeout(() => {
       supabase.from('places').update({ visited_note: value }).eq('id', placeId)
+      onChange?.()
     }, 600)
   }
 
