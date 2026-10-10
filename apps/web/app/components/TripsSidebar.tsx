@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase/client'
-import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound } from 'lucide-react'
+import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound, Heart } from 'lucide-react'
 
 const supabase = createClient()
 
@@ -20,6 +20,18 @@ interface InboxCity {
   tripId: string
   city: string
   places: { name: string; category: string }[]
+}
+
+interface SaveCity {
+  key: string
+  label: string
+  tripIds: string[]
+}
+
+interface SavePlace {
+  id: string
+  name: string
+  trip_id: string
 }
 
 interface Props {
@@ -39,6 +51,37 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
   const [loading, setLoading] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [isGuest, setIsGuest] = useState(false)
+
+  // Saves — places saved to a real trip but not yet "been here", grouped by
+  // city. The planning-side counterpart to Maptured's memory-side "been
+  // there" list. Cities are derived from the already-fetched trips list (no
+  // extra query); each city's actual places are only fetched on expand —
+  // this account has 700+ unvisited places across its trips, so eagerly
+  // loading them all (like Inbox does, fine at Inbox's much smaller scale)
+  // would repeat the exact freeze found and fixed in Maptured's add-search.
+  const [saveCities, setSaveCities] = useState<SaveCity[]>([])
+  const [expandedSaveCity, setExpandedSaveCity] = useState<string | null>(null)
+  const [savePlacesByCity, setSavePlacesByCity] = useState<Record<string, SavePlace[]>>({})
+  const [loadingSaveCity, setLoadingSaveCity] = useState<Record<string, boolean>>({})
+
+  async function fetchSaveCityPlaces(city: SaveCity) {
+    setLoadingSaveCity(prev => ({ ...prev, [city.key]: true }))
+    const { data } = await supabase
+      .from('places')
+      .select('id, name, trip_id')
+      .in('trip_id', city.tripIds)
+      .eq('visited', false)
+      .order('name')
+      .limit(50)
+    setSavePlacesByCity(prev => ({ ...prev, [city.key]: data || [] }))
+    setLoadingSaveCity(prev => ({ ...prev, [city.key]: false }))
+  }
+
+  function toggleSaveCity(city: SaveCity) {
+    const next = expandedSaveCity === city.key ? null : city.key
+    setExpandedSaveCity(next)
+    if (next && !savePlacesByCity[city.key]) fetchSaveCityPlaces(city)
+  }
 
   async function handleDelete(e: React.MouseEvent, tripId: string) {
     e.stopPropagation()
@@ -70,8 +113,18 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .then(({ data }) => {
-          setTrips((data || []).filter((t: Trip) => t.destination))
+          const withDest = (data || []).filter((t: Trip) => t.destination)
+          setTrips(withDest)
           setLoading(false)
+
+          const groups = new Map<string, SaveCity>()
+          for (const t of withDest) {
+            const label = t.destination.trim()
+            const key = label.toLowerCase()
+            if (!groups.has(key)) groups.set(key, { key, label, tripIds: [] })
+            groups.get(key)!.tripIds.push(t.id)
+          }
+          setSaveCities([...groups.values()].sort((a, b) => a.label.localeCompare(b.label)))
         })
 
       supabase
@@ -212,6 +265,54 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
                       >
                         Start a trip from these →
                       </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Saves — places on a real trip not yet marked "been here", grouped
+            by city. Planning-side counterpart to Maptured's memory-side list. */}
+        {saveCities.length > 0 && (
+          <div className="px-4 pt-4 pb-2 border-b border-[rgba(0,0,0,0.06)]">
+            <div className="flex items-center gap-1.5 mb-2 text-[10px] font-semibold text-[#A3A3A3] uppercase tracking-widest">
+              <Heart size={11} strokeWidth={2} />
+              Saves
+            </div>
+            <div className="flex flex-col gap-1">
+              {saveCities.map(city => (
+                <div key={city.key} className="rounded-md overflow-hidden">
+                  <button
+                    onClick={() => toggleSaveCity(city)}
+                    className="w-full flex items-center justify-between px-2.5 py-2 rounded-md hover:bg-[rgba(0,0,0,0.03)] transition-colors"
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <MapPin size={12} strokeWidth={2} className="text-[#3D5AFE] shrink-0" />
+                      <span className="text-sm text-[#0A0A0A] font-medium truncate">{city.label}</span>
+                    </span>
+                    <ChevronDown size={13} strokeWidth={2} className={`text-[#A3A3A3] shrink-0 transition-transform ${expandedSaveCity === city.key ? 'rotate-180' : ''}`} />
+                  </button>
+                  {expandedSaveCity === city.key && (
+                    <div className="px-2.5 pb-2.5">
+                      {loadingSaveCity[city.key] && (
+                        <p className="text-xs text-[#A3A3A3] pl-5 py-1">Loading...</p>
+                      )}
+                      {!loadingSaveCity[city.key] && (savePlacesByCity[city.key]?.length ?? 0) === 0 && (
+                        <p className="text-xs text-[#A3A3A3] pl-5 py-1">Nothing saved yet.</p>
+                      )}
+                      <div className="flex flex-col gap-1">
+                        {savePlacesByCity[city.key]?.map(p => (
+                          <button
+                            key={p.id}
+                            onClick={() => { onSelect(p.trip_id); onClose() }}
+                            className="text-xs text-[#6B6B6B] hover:text-[#3D5AFE] truncate pl-5 text-left transition-colors"
+                          >
+                            {p.name}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
