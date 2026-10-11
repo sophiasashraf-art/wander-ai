@@ -7,6 +7,7 @@ import { Search } from 'lucide-react'
 const supabase = createClient()
 
 interface SavedPlace {
+  id?: string
   name: string
   category: string
   city: string
@@ -117,8 +118,8 @@ export default function PlaceSearch({ tripId, destination, onSaved, onBeforeSave
         neighborhood: place.formatted_address,
       }
 
-      await supabase.from('places').insert({ ...saved, trip_id: resolvedTripId })
-      onSaved(saved)
+      const { data: inserted } = await supabase.from('places').insert({ ...saved, trip_id: resolvedTripId }).select('id').single()
+      onSaved({ ...saved, id: inserted?.id })
       setQuery('')
     } catch (e) {
       console.error('Failed to save place', e)
