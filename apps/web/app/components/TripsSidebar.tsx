@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase/client'
-import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound, Heart, Camera as CameraIcon } from 'lucide-react'
+import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound, Heart, Camera as CameraIcon, Trash2 } from 'lucide-react'
 import { dedupeByName } from '../../lib/dedupeByName'
 
 const supabase = createClient()
@@ -37,6 +37,7 @@ interface SavePlace {
   // immediately and upgrade in place once the lookup resolves.
   photoRef?: string | null
   address?: string | null
+  googleFetched?: boolean
 }
 
 interface Props {
@@ -68,6 +69,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
   const [expandedSaveCity, setExpandedSaveCity] = useState<string | null>(null)
   const [savePlacesByCity, setSavePlacesByCity] = useState<Record<string, SavePlace[]>>({})
   const [loadingSaveCity, setLoadingSaveCity] = useState<Record<string, boolean>>({})
+  const [confirmDeleteSaveCity, setConfirmDeleteSaveCity] = useState<string | null>(null)
 
   async function fetchSaveCityPlaces(city: SaveCity) {
     setLoadingSaveCity(prev => ({ ...prev, [city.key]: true }))
@@ -84,7 +86,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
     // write-through in fetchSaveGoogleData below) — use that instead of
     // re-resolving from Google on every open, which was the real cause of
     // slow photo loading here.
-    const withCache = (data || []).map((p: any) => ({ ...p, photoRef: p.photo_reference || null, address: p.neighborhood || null }))
+    const withCache = (data || []).map((p: any) => ({ ...p, photoRef: p.photo_reference || null, address: p.neighborhood || null, googleFetched: !!p.photo_reference }))
     const places: SavePlace[] = dedupeByName(withCache)
     setSavePlacesByCity(prev => ({ ...prev, [city.key]: places }))
     setLoadingSaveCity(prev => ({ ...prev, [city.key]: false }))
@@ -101,7 +103,7 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
         return {
           ...prev,
           [cityKey]: list.map(p => p.id === place.id
-            ? { ...p, photoRef: data.result?.photo_reference || null, address: data.result?.address || null }
+            ? { ...p, photoRef: data.result?.photo_reference || null, address: data.result?.address || null, googleFetched: true }
             : p),
         }
       })
@@ -118,7 +120,23 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
   function toggleSaveCity(city: SaveCity) {
     const next = expandedSaveCity === city.key ? null : city.key
     setExpandedSaveCity(next)
+    setConfirmDeleteSaveCity(null)
     if (next && !savePlacesByCity[city.key]) fetchSaveCityPlaces(city)
+  }
+
+  // Clears this city's saved-but-not-visited places — scoped to this city's
+  // trip ids only, so it doesn't touch the trips themselves or anything
+  // already marked been here in Maptured for the same city.
+  async function handleDeleteSaveCity(e: React.MouseEvent, city: SaveCity) {
+    e.stopPropagation()
+    if (confirmDeleteSaveCity !== city.key) {
+      setConfirmDeleteSaveCity(city.key)
+      setTimeout(() => setConfirmDeleteSaveCity(prev => (prev === city.key ? null : prev)), 3000)
+      return
+    }
+    setConfirmDeleteSaveCity(null)
+    await supabase.from('places').delete().in('trip_id', city.tripIds).eq('visited', false)
+    setSavePlacesByCity(prev => ({ ...prev, [city.key]: [] }))
   }
 
   async function handleDelete(e: React.MouseEvent, tripId: string) {
@@ -319,19 +337,43 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
               <Heart size={11} strokeWidth={2} />
               Saves
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               {saveCities.map(city => (
-                <div key={city.key} className="rounded-md overflow-hidden">
-                  <button
-                    onClick={() => toggleSaveCity(city)}
-                    className="w-full flex items-center justify-between px-2.5 py-2 rounded-md hover:bg-[rgba(0,0,0,0.03)] transition-colors"
-                  >
-                    <span className="flex items-center gap-2 min-w-0">
+                <div
+                  key={city.key}
+                  className={`rounded-lg overflow-hidden bg-white transition-shadow ${
+                    expandedSaveCity === city.key ? 'shadow-[0_2px_8px_-2px_rgba(0,0,0,0.1)]' : 'shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_-2px_rgba(0,0,0,0.08)]'
+                  }`}
+                >
+                  {/* Two sibling buttons, not nested — a button can't legally
+                      contain a button (invalid HTML, triggers a hydration
+                      mismatch), which is what the delete button inside the
+                      row toggle used to be. */}
+                  <div className="w-full flex items-center justify-between px-2.5 py-2.5">
+                    <button
+                      onClick={() => toggleSaveCity(city)}
+                      className="flex-1 flex items-center gap-2 min-w-0 text-left transition-colors"
+                    >
                       <MapPin size={12} strokeWidth={2} className="text-[#3D5AFE] shrink-0" />
                       <span className="text-sm text-[#0A0A0A] font-medium truncate">{city.label}</span>
+                    </button>
+                    <span className="flex items-center gap-1 shrink-0">
+                      {expandedSaveCity === city.key && (
+                        <button
+                          onClick={e => handleDeleteSaveCity(e, city)}
+                          className={`flex items-center gap-1 text-[11px] font-medium px-1.5 py-1 rounded-md transition-colors ${
+                            confirmDeleteSaveCity === city.key ? 'bg-red-50 text-red-500' : 'text-[#A3A3A3] hover:text-red-400 hover:bg-red-50'
+                          }`}
+                        >
+                          <Trash2 size={11} strokeWidth={2} />
+                          {confirmDeleteSaveCity === city.key && 'Delete all?'}
+                        </button>
+                      )}
+                      <button onClick={() => toggleSaveCity(city)} className="p-0.5">
+                        <ChevronDown size={13} strokeWidth={2} className={`text-[#A3A3A3] shrink-0 transition-transform ${expandedSaveCity === city.key ? 'rotate-180' : ''}`} />
+                      </button>
                     </span>
-                    <ChevronDown size={13} strokeWidth={2} className={`text-[#A3A3A3] shrink-0 transition-transform ${expandedSaveCity === city.key ? 'rotate-180' : ''}`} />
-                  </button>
+                  </div>
                   {expandedSaveCity === city.key && (
                     <div className="px-2.5 pb-2.5">
                       {loadingSaveCity[city.key] && (
@@ -341,29 +383,34 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
                         <p className="text-xs text-[#A3A3A3] pl-5 py-1">Nothing saved yet.</p>
                       )}
                       <div className="grid grid-cols-2 gap-1.5 pl-1">
-                        {savePlacesByCity[city.key]?.map(p => (
-                          <button
-                            key={p.id}
-                            onClick={() => { onSelect(p.trip_id); onClose() }}
-                            className="text-left bg-white border border-[#E5E5E5] rounded-md overflow-hidden hover:border-[#D4D4D4] transition-colors"
-                          >
-                            <div className="aspect-[4/3] bg-[#F0F0F0] flex items-center justify-center overflow-hidden">
-                              {p.photoRef ? (
-                                <img
-                                  src={`/api/place-photo?ref=${encodeURIComponent(p.photoRef)}`}
-                                  alt={p.name}
-                                  className="w-full h-full object-cover"
-                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-                                />
-                              ) : (
-                                <CameraIcon size={16} strokeWidth={1.5} className="text-[#C4C4C4]" />
-                              )}
-                            </div>
-                            <div className="px-1.5 py-1.5">
-                              <p className="text-[11px] font-medium text-[#0A0A0A] truncate">{p.name}</p>
-                            </div>
-                          </button>
-                        ))}
+                        {savePlacesByCity[city.key]?.map(p => {
+                          const photoPending = !p.photoRef && !p.googleFetched
+                          return (
+                            <button
+                              key={p.id}
+                              onClick={() => { onSelect(p.trip_id); onClose() }}
+                              className="text-left bg-white border border-[#E5E5E5] rounded-md overflow-hidden hover:border-[#D4D4D4] hover:shadow-sm active:scale-[0.98] transition-all"
+                            >
+                              <div className={`aspect-[4/3] flex items-center justify-center overflow-hidden ${photoPending ? 'skeleton-shimmer' : 'bg-[#F0F0F0]'}`}>
+                                {p.photoRef ? (
+                                  <img
+                                    src={`/api/place-photo?ref=${encodeURIComponent(p.photoRef)}`}
+                                    alt={p.name}
+                                    loading="lazy"
+                                    decoding="async"
+                                    className="w-full h-full object-cover"
+                                    onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                  />
+                                ) : !photoPending ? (
+                                  <CameraIcon size={16} strokeWidth={1.5} className="text-[#C4C4C4]" />
+                                ) : null}
+                              </div>
+                              <div className="px-1.5 py-1.5">
+                                <p className="text-[11px] font-medium text-[#0A0A0A] truncate">{p.name}</p>
+                              </div>
+                            </button>
+                          )
+                        })}
                       </div>
                     </div>
                   )}

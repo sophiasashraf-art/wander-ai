@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Search, X, Compass, MapPin, Camera as CameraIcon } from 'lucide-react'
+import { ArrowLeft, Plus, Search, X, Compass, MapPin, Camera as CameraIcon, Trash2 } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
 import PlaceReview from '../components/PlaceReview'
 import PlaceSearch from '../components/PlaceSearch'
@@ -68,6 +68,7 @@ export default function MapturedPage() {
   // list of rows.
   const [overallStats, setOverallStats] = useState({ places: 0, ratingSum: 0, ratingCount: 0 })
   const [editingPlace, setEditingPlace] = useState<BeenPlace | null>(null)
+  const [confirmDeleteCity, setConfirmDeleteCity] = useState<string | null>(null)
 
   const [showAdd, setShowAdd] = useState(false)
   const [addMode, setAddMode] = useState<'saves' | 'new'>('saves')
@@ -194,7 +195,30 @@ export default function MapturedPage() {
   function selectCity(city: CityGroup) {
     const next = activeCity === city.key ? null : city.key
     setActiveCity(next)
+    setConfirmDeleteCity(null)
     if (next && !placesByCity[city.key]) fetchCityPlaces(city)
+  }
+
+  // Removes this city's "been here" log — only the visited places, scoped to
+  // this city's trip ids. Doesn't touch the trips themselves (an itinerary
+  // might still be live on one of them) or anything in Saves (unvisited
+  // places for the same city survive this untouched).
+  async function handleDeleteCity(city: CityGroup) {
+    if (confirmDeleteCity !== city.key) { setConfirmDeleteCity(city.key); return }
+    setConfirmDeleteCity(null)
+    await supabase.from('places').delete().in('trip_id', city.tripIds).eq('visited', true)
+    const removed = placesByCity[city.key] || []
+    const removedRatings = removed.map(p => p.visited_rating).filter((n): n is number => n != null)
+    setOverallStats(prev => ({
+      places: prev.places - removed.length,
+      ratingSum: prev.ratingSum - removedRatings.reduce((a, b) => a + b, 0),
+      ratingCount: prev.ratingCount - removedRatings.length,
+    }))
+    setPlacesByCity(prev => ({ ...prev, [city.key]: [] }))
+    setCountByCity(prev => ({ ...prev, [city.key]: 0 }))
+    setAvgByCity(prev => ({ ...prev, [city.key]: null }))
+    setPinByCity(prev => { const next = { ...prev }; delete next[city.key]; return next })
+    setActiveCity(null)
   }
 
   // Same capped/debounced search pattern as before — never fetch-all.
@@ -393,7 +417,22 @@ export default function MapturedPage() {
         {/* Place tiles for the selected city */}
         {activeCityGroup && (
           <div>
-            <p className="text-lg font-semibold tracking-tight text-[#0A0A0A] mb-3">{activeCityGroup.label}</p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-lg font-semibold tracking-tight text-[#0A0A0A]">{activeCityGroup.label}</p>
+              {(countByCity[activeCityGroup.key] || 0) > 0 && (
+                <button
+                  onClick={() => handleDeleteCity(activeCityGroup)}
+                  className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg transition-colors ${
+                    confirmDeleteCity === activeCityGroup.key
+                      ? 'bg-red-50 text-red-500'
+                      : 'text-[#A3A3A3] hover:text-red-400 hover:bg-red-50'
+                  }`}
+                >
+                  <Trash2 size={12} strokeWidth={2} />
+                  {confirmDeleteCity === activeCityGroup.key ? 'Delete all?' : 'Delete city'}
+                </button>
+              )}
+            </div>
             {loadingCity[activeCityGroup.key] && (
               <p className="text-sm text-[#A3A3A3] text-center py-10">Loading...</p>
             )}
