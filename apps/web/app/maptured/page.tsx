@@ -6,6 +6,7 @@ import { ArrowLeft, Plus, Search, X, Compass, MapPin, Camera as CameraIcon } fro
 import { createClient } from '../../lib/supabase/client'
 import PlaceReview from '../components/PlaceReview'
 import PlaceSearch from '../components/PlaceSearch'
+import CityPinMap from '../components/CityPinMap'
 import { scoreColor, scoreTint, podiumColor } from '../../lib/beliScore'
 import { dedupeByName, dedupeRatedByName } from '../../lib/dedupeByName'
 
@@ -56,6 +57,11 @@ export default function MapturedPage() {
   const [loadingCity, setLoadingCity] = useState<Record<string, boolean>>({})
   const [countByCity, setCountByCity] = useState<Record<string, number>>({})
   const [avgByCity, setAvgByCity] = useState<Record<string, number | null>>({})
+  // One representative coordinate per city, for a pin on the world-map
+  // background below — reuses an already-visited place's own lat/lng (pulled
+  // in the same per-city count/avg query below) rather than a separate
+  // geocoding call per city.
+  const [pinByCity, setPinByCity] = useState<Record<string, { lat: number; lng: number }>>({})
   // Accumulated across the same per-city count/avg fetch below — a Spotify-
   // Wrapped-style "mirror" strip (total places, cities, overall score) gives
   // the page an identity/profile feel rather than reading as a plain utility
@@ -98,12 +104,13 @@ export default function MapturedPage() {
       // One lightweight query per city (a handful of cities, not the
       // 700-place scale problem the rest of this page deliberately avoids by
       // never fetching more than one city's full place list at a time) —
-      // fetches just the rating column so the city tile can show a Beli-style
-      // "N been here · avg X.X" without a second round trip.
+      // fetches the rating + lat/lng columns so the city tile can show a
+      // Beli-style "N been here · avg X.X" AND the world map can drop a pin,
+      // without a second round trip for either.
       sorted.forEach(async city => {
         const { data } = await supabase
           .from('places')
-          .select('name, visited_rating, visited_note')
+          .select('name, visited_rating, visited_note, lat, lng')
           .in('trip_id', city.tripIds)
           .eq('visited', true)
         // Dedupe before counting/averaging — same place saved to more than
@@ -113,6 +120,10 @@ export default function MapturedPage() {
         const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : null
         setCountByCity(prev => ({ ...prev, [city.key]: rows.length }))
         setAvgByCity(prev => ({ ...prev, [city.key]: avg }))
+        // One pin per city — any visited place's coordinates will do, they're
+        // all in the same city.
+        const pinPlace = (data || []).find((r: any) => typeof r.lat === 'number' && typeof r.lng === 'number')
+        if (pinPlace) setPinByCity(prev => ({ ...prev, [city.key]: { lat: (pinPlace as any).lat, lng: (pinPlace as any).lng } }))
         setOverallStats(prev => ({
           places: prev.places + rows.length,
           ratingSum: prev.ratingSum + ratings.reduce((a, b) => a + b, 0),
@@ -275,6 +286,12 @@ export default function MapturedPage() {
     ? activePlaces?.find(p => p.id === editingPlace.id) || editingPlace
     : null
 
+  // One pin per city you've marked been here — any one of that city's
+  // visited places' coordinates will do, they all land in the same spot.
+  const cityPins = cities
+    .filter(c => (countByCity[c.key] || 0) > 0 && pinByCity[c.key])
+    .map(c => ({ key: c.key, coords: pinByCity[c.key] }))
+
   return (
     <div className="min-h-screen bg-[#FAFAFA]">
       <div className="max-w-3xl mx-auto px-5 py-8">
@@ -295,6 +312,8 @@ export default function MapturedPage() {
             <Plus size={15} strokeWidth={2} /> Add
           </button>
         </div>
+
+        {!loading && cityPins.length > 0 && <CityPinMap pins={cityPins} />}
 
         {/* Stats mirror — a Spotify-Wrapped-style identity strip (total
             places, cities, overall score) rather than diving straight into a
