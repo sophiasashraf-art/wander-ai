@@ -124,3 +124,37 @@ input:focus, textarea:focus, select:focus {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 3px rgba(61, 90, 254, 0.1);
 }
+
+/* Shimmer skeleton — for a photo tile while its image is still loading,
+   instead of a static gray box that just pops the photo in once it arrives. */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #F0F0F0 25%, #F7F7F7 50%, #F0F0F0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Bottom sheet — mobile presentation for a modal, used in place of a
+   shrunken floating dialog so it reads as a native mobile pattern instead
+   of a desktop box dropped onto a small screen. Desktop keeps the floating
+   centered card via its own sm: classes alongside this. */
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.sheet-enter {
+  animation: sheet-up 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Subtle row entrance for a freshly-rendered list (leaderboard, tiles) —
+   a short fade+rise instead of content just appearing instantly. */
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.row-in {
+  animation: row-in 0.25s ease-out backwards;
+}

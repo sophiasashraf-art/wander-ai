@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Star, Camera, X, Check } from 'lucide-react'
+import { Camera, X, Check } from 'lucide-react'
 import { createClient } from '../../lib/supabase/client'
+import { RATING_BUCKETS, scoreColor, scoreTint } from '../../lib/beliScore'
 
 const supabase = createClient()
 const PHOTO_BUCKET = 'place-photos'
@@ -46,7 +47,9 @@ export default function PlaceReview({ placeId, onChange }: { placeId: string; on
 
       if (cancelled) return
       setVisited(place?.visited || false)
-      setRating(place?.visited_rating ?? null)
+      // PostgREST can serialize `numeric` columns as strings to avoid float
+      // precision loss — coerce so .toFixed()/comparisons below don't choke.
+      setRating(place?.visited_rating != null ? Number(place.visited_rating) : null)
       setNote(place?.visited_note || '')
       setPhotos(withUrls)
       setLoading(false)
@@ -66,9 +69,9 @@ export default function PlaceReview({ placeId, onChange }: { placeId: string; on
     onChange?.()
   }
 
-  async function handleRate(stars: number) {
-    setRating(stars)
-    await supabase.from('places').update({ visited_rating: stars }).eq('id', placeId)
+  async function handleRate(score: number) {
+    setRating(score)
+    await supabase.from('places').update({ visited_rating: score }).eq('id', placeId)
     onChange?.()
   }
 
@@ -112,27 +115,44 @@ export default function PlaceReview({ placeId, onChange }: { placeId: string; on
     return (
       <button
         onClick={handleMarkVisited}
-        className="mt-2.5 flex items-center gap-1.5 text-xs text-[#6B6B6B] hover:text-[#3D5AFE] font-medium transition-colors"
+        className="mt-2.5 flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors"
+        style={{ background: 'rgba(61,90,254,0.08)', color: '#3D5AFE' }}
       >
-        <Check size={12} strokeWidth={2} /> Mark as been here
+        <Check size={12} strokeWidth={2.5} /> Mark as been here
       </button>
     )
   }
 
   return (
     <div className="mt-2.5 pt-2.5 border-t border-[#EFEFEF]">
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-0.5">
-          {[1, 2, 3, 4, 5].map(n => (
-            <button key={n} onClick={() => handleRate(n)} className="p-0.5">
-              <Star
-                size={13}
-                strokeWidth={2}
-                className={n <= (rating || 0) ? 'fill-[#3D5AFE] text-[#3D5AFE]' : 'text-[#D4D4D4]'}
-              />
-            </button>
-          ))}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {RATING_BUCKETS.map(b => {
+            const active = rating != null && Math.abs(rating - b.score) < 0.9
+            return (
+              <button
+                key={b.label}
+                onClick={() => handleRate(b.score)}
+                className="text-xs font-semibold px-2.5 py-1.5 rounded-full transition-all"
+                style={active
+                  ? { background: b.color, color: '#FFFFFF', boxShadow: `0 2px 6px -1px ${b.color}66` }
+                  : { background: scoreTint(b.score), color: b.color }}
+              >
+                {b.label}
+              </button>
+            )
+          })}
         </div>
+        {rating != null && (
+          <span
+            className="shrink-0 text-sm font-bold text-white rounded-lg px-2 py-1"
+            style={{ background: scoreColor(rating), boxShadow: `0 2px 6px -1px ${scoreColor(rating)}66` }}
+          >
+            {rating.toFixed(1)}
+          </span>
+        )}
+      </div>
+      <div className="flex justify-end mb-1.5">
         <button
           onClick={handleUnmarkVisited}
           className="text-[10px] text-[#A3A3A3] hover:text-[#D14343] transition-colors"

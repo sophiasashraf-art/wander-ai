@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase/client'
-import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound, Heart } from 'lucide-react'
+import { X, Compass, Leaf, Scale, Zap, Plus, Inbox, ChevronDown, MapPin, LogOut, KeyRound, Heart, Camera as CameraIcon } from 'lucide-react'
+import { dedupeByName } from '../../lib/dedupeByName'
 
 const supabase = createClient()
 
@@ -32,6 +33,10 @@ interface SavePlace {
   id: string
   name: string
   trip_id: string
+  // Filled in lazily from Google (see fetchSaveGoogleData) — tiles render
+  // immediately and upgrade in place once the lookup resolves.
+  photoRef?: string | null
+  address?: string | null
 }
 
 interface Props {
@@ -68,13 +73,46 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
     setLoadingSaveCity(prev => ({ ...prev, [city.key]: true }))
     const { data } = await supabase
       .from('places')
-      .select('id, name, trip_id')
+      .select('id, name, trip_id, photo_reference, neighborhood')
       .in('trip_id', city.tripIds)
       .eq('visited', false)
       .order('name')
       .limit(50)
-    setSavePlacesByCity(prev => ({ ...prev, [city.key]: data || [] }))
+    // Same place can be saved to more than one trip for this city — collapse
+    // before rendering so it doesn't show as two tiles. Places already have a
+    // cached photo/address on the row (set at save time, or by the
+    // write-through in fetchSaveGoogleData below) — use that instead of
+    // re-resolving from Google on every open, which was the real cause of
+    // slow photo loading here.
+    const withCache = (data || []).map((p: any) => ({ ...p, photoRef: p.photo_reference || null, address: p.neighborhood || null }))
+    const places: SavePlace[] = dedupeByName(withCache)
+    setSavePlacesByCity(prev => ({ ...prev, [city.key]: places }))
     setLoadingSaveCity(prev => ({ ...prev, [city.key]: false }))
+    places.filter(p => !p.photoRef).forEach(p => fetchSaveGoogleData(city.label, city.key, p))
+  }
+
+  async function fetchSaveGoogleData(cityLabel: string, cityKey: string, place: SavePlace) {
+    try {
+      const res = await fetch(`/api/place-search?name=${encodeURIComponent(place.name)}&location=${encodeURIComponent(cityLabel)}`)
+      const data = await res.json()
+      setSavePlacesByCity(prev => {
+        const list = prev[cityKey]
+        if (!list) return prev
+        return {
+          ...prev,
+          [cityKey]: list.map(p => p.id === place.id
+            ? { ...p, photoRef: data.result?.photo_reference || null, address: data.result?.address || null }
+            : p),
+        }
+      })
+      if (data.result?.photo_reference) {
+        await supabase.from('places')
+          .update({ photo_reference: data.result.photo_reference, neighborhood: data.result.address || null })
+          .eq('id', place.id)
+      }
+    } catch {
+      // Tile just falls back to its no-photo state — not worth surfacing an error for.
+    }
   }
 
   function toggleSaveCity(city: SaveCity) {
@@ -302,14 +340,28 @@ export default function TripsSidebar({ open, currentTripId, onClose, onSelect, o
                       {!loadingSaveCity[city.key] && (savePlacesByCity[city.key]?.length ?? 0) === 0 && (
                         <p className="text-xs text-[#A3A3A3] pl-5 py-1">Nothing saved yet.</p>
                       )}
-                      <div className="flex flex-col gap-1">
+                      <div className="grid grid-cols-2 gap-1.5 pl-1">
                         {savePlacesByCity[city.key]?.map(p => (
                           <button
                             key={p.id}
                             onClick={() => { onSelect(p.trip_id); onClose() }}
-                            className="text-xs text-[#6B6B6B] hover:text-[#3D5AFE] truncate pl-5 text-left transition-colors"
+                            className="text-left bg-white border border-[#E5E5E5] rounded-md overflow-hidden hover:border-[#D4D4D4] transition-colors"
                           >
-                            {p.name}
+                            <div className="aspect-[4/3] bg-[#F0F0F0] flex items-center justify-center overflow-hidden">
+                              {p.photoRef ? (
+                                <img
+                                  src={`/api/place-photo?ref=${encodeURIComponent(p.photoRef)}`}
+                                  alt={p.name}
+                                  className="w-full h-full object-cover"
+                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                />
+                              ) : (
+                                <CameraIcon size={16} strokeWidth={1.5} className="text-[#C4C4C4]" />
+                              )}
+                            </div>
+                            <div className="px-1.5 py-1.5">
+                              <p className="text-[11px] font-medium text-[#0A0A0A] truncate">{p.name}</p>
+                            </div>
                           </button>
                         ))}
                       </div>

@@ -14,7 +14,7 @@ export async function GET(req: Request) {
         place_id: placeId,
         key: process.env.GOOGLE_PLACES_API_KEY!,
         sessiontoken: session,
-        fields: ['name', 'geometry', 'types', 'formatted_address', 'address_components'] as any,
+        fields: ['name', 'geometry', 'types', 'formatted_address', 'address_components', 'photos', 'place_id'] as any,
       },
     })
     return NextResponse.json({ result: res.data.result })

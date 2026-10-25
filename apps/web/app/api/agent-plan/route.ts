@@ -119,7 +119,7 @@ ${toolRules}`
         if (hasExistingItinerary) {
           emit({ type: 'phase', text: 'Applying your change' })
           const res = await openai.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'gpt-5.1',
             messages: [{ role: 'system', content: editPrompt }, ...(messages || [])],
           })
           const reply = res.choices[0].message.content || ''
@@ -153,7 +153,7 @@ ${toolRules}`
 
         for (let iter = 0; iter < MAX_ITERS && !finalized; iter++) {
           const res = await openai.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'gpt-5.1',
             messages: convo,
             tools: AGENT_TOOLS,
             tool_choice: 'auto',
@@ -226,7 +226,7 @@ ${toolRules}`
           emit({ type: 'phase', text: 'Wrapping up' })
           try {
             const res = await openai.chat.completions.create({
-              model: 'gpt-4o-mini',
+              model: 'gpt-5.1',
               messages: [...convo, { role: 'user', content: 'Submit your best itinerary now with finalize_itinerary — do not search or check anything further.' }],
               tools: AGENT_TOOLS,
               tool_choice: { type: 'function', function: { name: 'finalize_itinerary' } },

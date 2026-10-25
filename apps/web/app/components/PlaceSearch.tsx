@@ -15,6 +15,8 @@ interface SavedPlace {
   lat?: number
   lng?: number
   neighborhood?: string
+  photo_reference?: string | null
+  google_place_id?: string | null
 }
 
 interface Props {
@@ -116,6 +118,10 @@ export default function PlaceSearch({ tripId, destination, onSaved, onBeforeSave
         lat: place.geometry?.location?.lat,
         lng: place.geometry?.location?.lng,
         neighborhood: place.formatted_address,
+        // Capture these now so a later "been here" view (Maptured, Saves)
+        // never needs to re-resolve this place from Google just to show a photo.
+        photo_reference: place.photos?.[0]?.photo_reference || null,
+        google_place_id: place.place_id || null,
       }
 
       const { data: inserted } = await supabase.from('places').insert({ ...saved, trip_id: resolvedTripId }).select('id').single()

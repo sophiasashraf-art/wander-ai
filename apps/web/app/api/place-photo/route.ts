@@ -28,7 +28,7 @@ export async function GET(req: Request) {
     return new Response(buffer, {
       headers: {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400, s-maxage=0',
+        'Cache-Control': 'public, max-age=604800, s-maxage=604800',
         'Vary': 'Accept',
       },
     })
