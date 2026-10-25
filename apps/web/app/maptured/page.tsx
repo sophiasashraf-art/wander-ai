@@ -62,6 +62,13 @@ export default function MapturedPage() {
   // in the same per-city count/avg query below) rather than a separate
   // geocoding call per city.
   const [pinByCity, setPinByCity] = useState<Record<string, { lat: number; lng: number }>>({})
+  // Total places (visited + saved-but-not-visited) per city — lets "Delete
+  // city" tell a truly empty city (safe to remove the trip entirely) apart
+  // from one that's just unvisited-so-far in Maptured but still has real
+  // saved places sitting in Saves (deleting the trip would silently wipe
+  // those too — confirmed this is a real case, not hypothetical, e.g. an
+  // account with 19 saved Hong Kong places and 0 visited).
+  const [totalByCity, setTotalByCity] = useState<Record<string, number>>({})
   // Accumulated across the same per-city count/avg fetch below — a Spotify-
   // Wrapped-style "mirror" strip (total places, cities, overall score) gives
   // the page an identity/profile feel rather than reading as a plain utility
@@ -125,6 +132,12 @@ export default function MapturedPage() {
         // all in the same city.
         const pinPlace = (data || []).find((r: any) => typeof r.lat === 'number' && typeof r.lng === 'number')
         if (pinPlace) setPinByCity(prev => ({ ...prev, [city.key]: { lat: (pinPlace as any).lat, lng: (pinPlace as any).lng } }))
+        // head:true — count only, no rows transferred.
+        const { count: total } = await supabase
+          .from('places')
+          .select('id', { count: 'exact', head: true })
+          .in('trip_id', city.tripIds)
+        setTotalByCity(prev => ({ ...prev, [city.key]: total || 0 }))
         setOverallStats(prev => ({
           places: prev.places + rows.length,
           ratingSum: prev.ratingSum + ratings.reduce((a, b) => a + b, 0),
@@ -203,10 +216,29 @@ export default function MapturedPage() {
   // this city's trip ids. Doesn't touch the trips themselves (an itinerary
   // might still be live on one of them) or anything in Saves (unvisited
   // places for the same city survive this untouched).
+  //
+  // A city with zero visited places is a different case: if it also has zero
+  // saved-but-not-visited places (totalByCity === 0), it's a genuinely empty
+  // trip with nothing to lose, so delete removes the trip(s) themselves —
+  // otherwise there'd be no way to clear a junk/empty city off the grid at
+  // all. If it DOES still have saved places (confirmed this happens — an
+  // account with 19 saved places and 0 visited for one city), this button
+  // doesn't render at all (see the JSX below): Maptured has nothing of its
+  // own to delete there, and deleting the trip would silently take the Saves
+  // places with it.
   async function handleDeleteCity(city: CityGroup) {
     if (confirmDeleteCity !== city.key) { setConfirmDeleteCity(city.key); return }
     setConfirmDeleteCity(null)
-    await supabase.from('places').delete().in('trip_id', city.tripIds).eq('visited', true)
+
+    if ((countByCity[city.key] || 0) === 0) {
+      await supabase.from('places').delete().in('trip_id', city.tripIds)
+      await supabase.from('trips').delete().in('id', city.tripIds)
+      setCities(prev => prev.filter(c => c.key !== city.key))
+      setTotalByCity(prev => { const next = { ...prev }; delete next[city.key]; return next })
+    } else {
+      await supabase.from('places').delete().in('trip_id', city.tripIds).eq('visited', true)
+    }
+
     const removed = placesByCity[city.key] || []
     const removedRatings = removed.map(p => p.visited_rating).filter((n): n is number => n != null)
     setOverallStats(prev => ({
@@ -419,19 +451,24 @@ export default function MapturedPage() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-lg font-semibold tracking-tight text-[#0A0A0A]">{activeCityGroup.label}</p>
-              {(countByCity[activeCityGroup.key] || 0) > 0 && (
-                <button
-                  onClick={() => handleDeleteCity(activeCityGroup)}
-                  className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg transition-colors ${
-                    confirmDeleteCity === activeCityGroup.key
-                      ? 'bg-red-50 text-red-500'
-                      : 'text-[#A3A3A3] hover:text-red-400 hover:bg-red-50'
-                  }`}
-                >
-                  <Trash2 size={12} strokeWidth={2} />
-                  {confirmDeleteCity === activeCityGroup.key ? 'Delete all?' : 'Delete city'}
-                </button>
-              )}
+              {(() => {
+                const hasVisited = (countByCity[activeCityGroup.key] || 0) > 0
+                const trulyEmpty = totalByCity[activeCityGroup.key] === 0
+                if (!hasVisited && !trulyEmpty) return null // only saved-not-visited places — nothing of Maptured's own to delete, see handleDeleteCity
+                return (
+                  <button
+                    onClick={() => handleDeleteCity(activeCityGroup)}
+                    className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg transition-colors ${
+                      confirmDeleteCity === activeCityGroup.key
+                        ? 'bg-red-50 text-red-500'
+                        : 'text-[#A3A3A3] hover:text-red-400 hover:bg-red-50'
+                    }`}
+                  >
+                    <Trash2 size={12} strokeWidth={2} />
+                    {confirmDeleteCity === activeCityGroup.key ? 'Delete all?' : trulyEmpty ? 'Remove empty city' : 'Delete city'}
+                  </button>
+                )
+              })()}
             </div>
             {loadingCity[activeCityGroup.key] && (
               <p className="text-sm text-[#A3A3A3] text-center py-10">Loading...</p>

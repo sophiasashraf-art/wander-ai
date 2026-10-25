@@ -13,10 +13,29 @@ export default function UpdatePasswordPage() {
 
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) router.replace('/login')
+
+    ;(async () => {
+      // The reset-password email link lands here with the session only in
+      // the URL's hash fragment (#access_token=...&refresh_token=...&type=
+      // recovery) — an implicit-flow token. But our browser client
+      // (`@supabase/ssr`'s createBrowserClient) is hardcoded to PKCE and
+      // doesn't reliably auto-detect/exchange that hash on its own —
+      // confirmed directly: a real reset link still bounced to /login even
+      // after waiting on onAuthStateChange/getSession. Parse it ourselves
+      // and set the session explicitly instead of relying on auto-detection.
+      const hash = new URLSearchParams(window.location.hash.slice(1))
+      const access_token = hash.get('access_token')
+      const refresh_token = hash.get('refresh_token')
+      if (access_token && refresh_token) {
+        await supabase.auth.setSession({ access_token, refresh_token })
+        // Drop the tokens from the visible URL now that they're applied.
+        window.history.replaceState({}, '', window.location.pathname)
+      }
+
+      const { data } = await supabase.auth.getSession()
+      if (!data.session) { router.replace('/login'); return }
       setCheckingSession(false)
-    })
+    })()
   }, [router])
 
   async function handleSubmit(e: React.FormEvent) {
