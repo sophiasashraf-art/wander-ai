@@ -28,7 +28,14 @@ export async function GET(req: Request) {
     return new Response(buffer, {
       headers: {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=604800, s-maxage=604800',
+        // s-maxage (shared/CDN caching) must stay off here: Netlify's edge
+        // cache keys this route by pathname only and ignores the `ref` query
+        // string, so turning on CDN caching made every request serve back
+        // whichever photo was first cached, regardless of ref — confirmed
+        // directly (3 different refs → byte-identical responses). max-age
+        // alone still gives each browser real caching, since browsers DO
+        // vary their cache by the full URL including the query string.
+        'Cache-Control': 'public, max-age=604800, s-maxage=0',
         'Vary': 'Accept',
       },
     })

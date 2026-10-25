@@ -53,12 +53,15 @@ export async function GET(req: Request) {
         address: result?.formatted_address || null,
         opening_hours: result?.opening_hours?.weekday_text || null,
       },
-      // A place's photo/address/rating barely changes — cache it instead of
-      // re-running this 2-hop Google lookup (findPlaceFromText + placeDetails)
-      // on every request. The main caller (Maptured) now also writes the
-      // result back onto the place row itself, so most calls here are a
-      // one-time fallback for places that don't have that cached yet.
-    }, { headers: { 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' } })
+      // Browser-level caching only (no s-maxage/CDN caching) — Netlify's edge
+      // cache keys this route by pathname and ignores the name/location query
+      // string, so a shared cache here serves one request's result back for
+      // every other place entirely (confirmed directly: a request for "Louvre
+      // Museum" returned a cached "Eiffel Tower" response). max-age still
+      // caches correctly per-browser since browsers DO vary by full URL.
+      // The main caller (Maptured) now also writes the result back onto the
+      // place row itself, so most calls here are a one-time fallback anyway.
+    }, { headers: { 'Cache-Control': 'public, max-age=604800, s-maxage=0' } })
   } catch (e: any) {
     console.error('[place-search] error:', e.message, e?.response?.data || '')
     return NextResponse.json({ result: null, error: e.message })
